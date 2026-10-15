@@ -2,7 +2,7 @@ namespace Arcana.Runtime;
 
 public static class EngineLocator
 {
-    public const string Version = "main-74028cc";
+    public const string Version = "main-030a0e1";
 
     public static string Resolve(string? executable = null)
     {

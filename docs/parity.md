@@ -2,15 +2,15 @@
 
 ## Target and meaning
 
-Arcana exposes the complete native CLI, MCP, and CDP surface of the pinned **Obscura main revision** (`74028cc23fd1e89bf67b2deac3c6a27f2e634f49`). The default installer checks out that exact source commit and builds the rendering-and-stealth variant. `-Variant render` selects the ordinary rendering build instead. `-UseRelease` selects the retained v0.2.4 archive fallback when a source build is unavailable.
+Arcana exposes the complete native CLI, MCP, and CDP surface of the pinned **Obscura main revision** (`030a0e14d143cb9b1788855b3fe1dee7e1b8cc70`). The default installer checks out that exact source commit and builds the rendering-and-stealth variant. `-Variant render` selects the ordinary rendering build instead. `-UseRelease` selects the retained v0.2.4 archive fallback when a source build is unavailable.
 
 Arcana currently **uses the upstream Obscura binaries**. It adds a .NET host, owned process/profile lifecycle, page API, event transport, and Mana integration boundary. This is access to the same engine's capabilities, not a separately implemented renderer or a claim of Chromium compatibility beyond Obscura's own support. The native MCP server intentionally reports its upstream name/version and retains its original tool schemas. Arcana and native MCP element references belong to different sessions and must not be exchanged.
 
 Baseline references:
 
-- [Pinned CLI reference](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/docs/CLI-reference.md)
-- [Pinned MCP implementation and tool schemas](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/crates/obscura-mcp/src/lib.rs)
-- [Pinned CDP domains](https://github.com/h4ckf0r0day/obscura/tree/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/crates/obscura-cdp/src/domains)
+- [Pinned CLI reference](https://github.com/h4ckf0r0day/obscura/blob/030a0e14d143cb9b1788855b3fe1dee7e1b8cc70/docs/CLI-reference.md)
+- [Pinned MCP implementation and tool schemas](https://github.com/h4ckf0r0day/obscura/blob/030a0e14d143cb9b1788855b3fe1dee7e1b8cc70/crates/obscura-mcp/src/lib.rs)
+- [Pinned CDP domains](https://github.com/h4ckf0r0day/obscura/tree/030a0e14d143cb9b1788855b3fe1dee7e1b8cc70/crates/obscura-cdp/src/domains)
 - [Release artifacts](https://github.com/h4ckf0r0day/obscura/releases/tag/v0.2.4)
 
 ## Capability matrix

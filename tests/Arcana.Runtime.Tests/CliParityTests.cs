@@ -54,7 +54,7 @@ public sealed class CliParityTests
                     using var accepted = await http.PostAsync("/mcp", new StringContent(request, Encoding.UTF8, "application/json"), ct);
                     accepted.EnsureSuccessStatusCode();
                     using var reply = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync(ct));
-                    StringAssert.Contains(reply.RootElement.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString()!, "74028cc");
+                    StringAssert.Contains(reply.RootElement.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString()!, "030a0e1");
                 }
             }
             finally

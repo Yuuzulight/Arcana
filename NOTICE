@@ -2,7 +2,7 @@ Arcana
 Copyright 2026 Arcana contributors
 
 Arcana uses the pinned Obscura source revision
-74028cc23fd1e89bf67b2deac3c6a27f2e634f49 as its browser engine.
+030a0e14d143cb9b1788855b3fe1dee7e1b8cc70 as its browser engine.
 Upstream: https://github.com/h4ckf0r0day/obscura
 License: Apache License 2.0
 

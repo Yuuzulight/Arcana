@@ -48,7 +48,7 @@ For a client configuration, build first, then set the command to `dotnet` with a
 ["C:/ManaAI/Arcana/src/Arcana.Cli/bin/Debug/net10.0/Arcana.Cli.dll", "mcp"]
 ```
 
-Adjust the DLL path for your checkout or published build. All upstream browser tools and their schemas are retained, including form interaction, extraction, search, navigation, cookies/storage, tabs, screenshots, and PDF. The underlying MCP server identifies itself as Obscura. HTTP MCP uses upstream bearer authentication and origin controls; see the [upstream guide](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/docs/Use-the-MCP-server.md).
+Adjust the DLL path for your checkout or published build. All upstream browser tools and their schemas are retained, including form interaction, extraction, search, navigation, cookies/storage, tabs, screenshots, and PDF. The underlying MCP server identifies itself as Obscura. HTTP MCP uses upstream bearer authentication and origin controls; see the [upstream guide](https://github.com/h4ckf0r0day/obscura/blob/030a0e14d143cb9b1788855b3fe1dee7e1b8cc70/docs/Use-the-MCP-server.md).
 
 ## .NET runtime
 
