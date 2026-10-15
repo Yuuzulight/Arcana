@@ -15,6 +15,8 @@ The first milestone is the runtime shell:
 - health probing and deterministic process-tree cleanup;
 - a small CLI for diagnostics and local runtime smoke tests.
 
+The agent page layer now provides structured snapshots of links and controls, document-scoped element references, DOM clicks, and text-field filling. Snapshots omit field values, including passwords. References remain stable across snapshots of the same document and reject detached elements or references from a previous navigation.
+
 Arcana uses the Obscura-derived engine as its primary browser. Edge/Chrome are used only by the external default-browser fallback path when Arcana cannot handle a page. Arcana does not silently start or manage a second browser backend.
 
 ## Build and test
@@ -43,6 +45,23 @@ If an explicit fallback is needed, Arcana asks Windows to open the URL using the
 ```powershell
 dotnet run --project src/Arcana.Cli -- fallback https://example.com
 ```
+
+## Agent page controls
+
+Capture a page's controls as JSON:
+
+```powershell
+dotnet run --project src/Arcana.Cli -- snapshot https://example.com --executable=C:\path\to\obscura.exe
+```
+
+Run the real engine interaction regression alongside the policy tests:
+
+```powershell
+$env:ARCANA_TEST_ENGINE = 'C:\path\to\obscura.exe'
+dotnet test Arcana.slnx
+```
+
+Without that variable, the engine test is reported as skipped. Current snapshots cover the top document, capped at 500 controls. Click/fill use DOM events, which are synthetic; they do not provide native pointer input, hit testing, iframe/shadow-root traversal, or visual takeover. Snapshot capture reads current DOM state and does not wait for an application's asynchronous content to settle.
 
 ## Planned milestones
 

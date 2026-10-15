@@ -17,9 +17,15 @@ Every runtime starts with a Mana-owned profile unless the host supplies a delibe
 
 `BrowserRuntime.DisposeAsync` kills the complete child process tree and removes temporary profiles where Windows permits it. Future versions will add job-object enforcement so cleanup still happens if the host is terminated abruptly.
 
-## Planned agent surface
+## Agent page surface
 
-The next layer will sit above CDP and expose stable, backend-neutral operations:
+`ArcanaPage.SnapshotAsync` returns the URL, title, and up to 500 controls with references, names, roles, link destinations, input types, and disabled state. It excludes hidden/inert controls and does not serialize input values. References use a per-page store and per-document identity, so repeated snapshots preserve identity while document replacement and detached nodes invalidate old references.
+
+`ClickAsync` and `FillAsync` validate references against the current document and reject hidden or disabled targets. Fill accepts text inputs, textareas, and editable content and emits input/change events. These are synthetic DOM interactions, not trusted hardware events. JavaScript exceptions and navigation errors propagate to callers.
+
+Visibility uses DOM/CSS checks rather than layout rectangles because the installed Obscura v0.2.4 engine can return empty rectangles for inline links. This does not guarantee that a control is on screen or unobstructed. Iframes, shadow roots, application readiness, native input, and takeover remain future work.
+
+Remaining layers will extend this surface with:
 
 1. navigate and wait for a settled page;
 2. DOM snapshot with stable element references;

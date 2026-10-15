@@ -26,7 +26,9 @@ public sealed class ArcanaBrowser : IAsyncDisposable
     public async Task<ArcanaPage> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var result = await _connection.SendAsync("Target.createTarget", new { url = url ?? "about:blank" }, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (url is not null && (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || parsed.Scheme is not ("http" or "https" or "about")))
+            throw new ArgumentException("Arcana navigation only accepts http, https, or about URLs.", nameof(url));
+        var result = await _connection.SendAsync("Target.createTarget", new { url = "about:blank" }, cancellationToken: cancellationToken).ConfigureAwait(false);
         var targetId = result.GetProperty("targetId").GetString()
             ?? throw new InvalidOperationException("CDP did not return a target id.");
         var attached = await _connection.SendAsync("Target.attachToTarget", new { targetId, flatten = true }, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -34,6 +36,8 @@ public sealed class ArcanaBrowser : IAsyncDisposable
             ?? throw new InvalidOperationException("CDP did not return a session id.");
         var page = new ArcanaPage(_connection, targetId, sessionId);
         await page.EnableAsync(cancellationToken).ConfigureAwait(false);
+        if (url is not null)
+            await page.NavigateAsync(url, cancellationToken).ConfigureAwait(false);
         return page;
     }
 
