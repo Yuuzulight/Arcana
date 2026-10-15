@@ -17,6 +17,7 @@ $destination = [IO.Path]::GetFullPath($Destination)
 $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\engine.lock.json') -Raw | ConvertFrom-Json
 $Repository = if ([string]::IsNullOrWhiteSpace($Repository)) { 'https://github.com/' + $manifest.repository + '.git' } else { $Repository }
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
+$archive = $null
 $sourceDirectory = $null
 try {
     if ($manifest.sourceCommit -and -not $UseRelease) {
@@ -55,10 +56,12 @@ try {
         if ($digest -ne $asset.sha256) { throw "Engine checksum mismatch: $digest" }
         Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
         Write-Host "Arcana engine $($manifest.releaseVersion) ($Variant), SHA256 verified, installed under $destination"
-        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     }
 }
 finally {
+    if ($archive -and (Test-Path -LiteralPath $archive)) {
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    }
     if ($sourceDirectory -and (Test-Path -LiteralPath $sourceDirectory)) {
         $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
         $resolvedSource = [IO.Path]::GetFullPath($sourceDirectory)
