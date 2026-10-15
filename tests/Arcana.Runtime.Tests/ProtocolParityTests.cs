@@ -112,9 +112,6 @@ public sealed class ProtocolParityTests
         await page.RestoreStorageAsync(storage, ct);
         Assert.AreEqual("saved", await page.EvaluateStringAsync("localStorage.getItem('local')", ct));
         Assert.AreEqual("saved", await page.EvaluateStringAsync("sessionStorage.getItem('session')", ct));
-        await page.NavigateAndWaitAsync(site.Origin + "/two", ct);
-        Assert.AreEqual("saved", await page.EvaluateStringAsync("localStorage.getItem('local')", ct));
-        Assert.AreEqual("saved", await page.EvaluateStringAsync("sessionStorage.getItem('session')", ct));
         await Assert.ThrowsExceptionAsync<ArgumentException>(() => page.RestoreStorageAsync(storage with { Origin = "https://different.example" }, ct));
 
         using var network = page.Subscribe("Network.responseReceived");
@@ -132,6 +129,9 @@ public sealed class ProtocolParityTests
         await page.ClickAsync(Ref("Submit"), ct);
         await page.WaitForTextAsync("Submitted", cancellationToken: ct);
         StringAssert.Contains(site.LastPost, "name=Ada");
+        await page.NavigateAndWaitAsync(site.Origin + "/two", ct);
+        Assert.AreEqual("saved", await page.EvaluateStringAsync("localStorage.getItem('local')", ct));
+        Assert.AreEqual("saved", await page.EvaluateStringAsync("sessionStorage.getItem('session')", ct));
     }
 
     [TestMethod]
