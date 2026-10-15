@@ -1,0 +1,14 @@
+{
+  "repository": "h4ckf0r0day/obscura",
+  "version": "v0.2.4",
+  "assets": {
+    "render": {
+      "name": "obscura-x86_64-windows.zip",
+      "sha256": "8e5428bf8c101f1439c53a9dcb52d7d09bb22599206b49f6420028d93d01189b"
+    },
+    "stealth": {
+      "name": "obscura-x86_64-windows-stealth.zip",
+      "sha256": "47d85a13fb1d19aca0fd71ebb3a1367248542f5344878b064c8586a193d604c9"
+    }
+  }
+}

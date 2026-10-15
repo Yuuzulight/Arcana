@@ -1,0 +1,12 @@
+Arcana
+Copyright 2026 Arcana contributors
+
+Arcana uses Obscura v0.2.4 as its browser engine.
+Upstream: https://github.com/h4ckf0r0day/obscura
+License: Apache License 2.0
+
+The engine binaries are downloaded separately from upstream releases and are
+not included in this source repository. Their upstream identity and version
+are preserved. Engine changes and third-party components remain attributable
+to their respective authors; consult the upstream source and notices before
+redistributing the engine binaries.

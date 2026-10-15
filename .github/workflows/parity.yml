@@ -1,0 +1,35 @@
+name: Engine parity
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install pinned engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/fetch-engine.ps1
+      - name: Build
+        run: dotnet build Arcana.slnx --configuration Release
+      - name: Run policy, transport, CLI, MCP, and page parity tests
+        shell: pwsh
+        run: |
+          $env:ARCANA_TEST_ENGINE = Join-Path $pwd 'engines/obscura/current/obscura.exe'
+          dotnet test Arcana.slnx --configuration Release --no-build --logger "trx;LogFileName=parity.trx"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-results
+          path: '**/TestResults/*.trx'

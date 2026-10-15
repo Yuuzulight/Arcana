@@ -4,6 +4,22 @@ namespace Arcana.Runtime;
 
 internal static class PageScripts
 {
+    public static string ElementOperation(string store, string reference, string operation) => $$"""
+        (() => {
+          const state = window[{{JsonSerializer.Serialize(store)}}];
+          const el = state?.document === document ? state.elements.get({{JsonSerializer.Serialize(reference)}}) : null;
+          if (!el || !el.isConnected) throw new Error('Stale element reference; capture a new snapshot.');
+          if (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true' || el.closest('[hidden],[inert],[aria-hidden="true"]'))
+            throw new Error('Element is hidden or disabled.');
+          for (let node = el; node; node = node.parentElement) {
+            const style = getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')
+              throw new Error('Element is hidden or disabled.');
+          }
+          {{operation}}
+        })()
+        """;
+
     public static string Snapshot(string store) => $$"""
         (() => {
           const key = {{JsonSerializer.Serialize(store)}};
@@ -35,7 +51,9 @@ internal static class PageScripts
               name: name.replace(/\s+/g, ' ').trim().slice(0, 300), href: tag === 'a' ? el.href : null,
               type: tag === 'input' ? el.type : null, disabled: el.matches(':disabled') || !!el.disabled || el.getAttribute('aria-disabled') === 'true' };
           });
-          return JSON.stringify({ url: location.href, title: document.title, elements, truncated: controls.length > 500 });
+          const text = document.body?.innerText ?? '';
+          return JSON.stringify({ url: location.href, title: document.title, elements, truncated: controls.length > 500,
+            text: text.slice(0,12000), textTruncated: text.length > 12000 });
         })()
         """;
 

@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Arcana.Runtime;
 
-public sealed class ArcanaPage
+public sealed partial class ArcanaPage
 {
     private readonly CdpConnection _connection;
     private readonly string _targetId;
@@ -36,12 +36,20 @@ public sealed class ArcanaPage
     public async Task<string?> EvaluateStringAsync(string expression, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(expression);
+        var value = await EvaluateAsync(expression, cancellationToken).ConfigureAwait(false);
+        return value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ? null
+            : value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
+    }
+
+    public async Task<JsonElement> EvaluateAsync(string expression, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(expression);
         var result = await _connection.SendAsync("Runtime.evaluate", new { expression, returnByValue = true, awaitPromise = true }, _sessionId, cancellationToken).ConfigureAwait(false);
         if (result.TryGetProperty("exceptionDetails", out var exception))
             throw new InvalidOperationException($"Page JavaScript failed: {exception}");
         if (!result.TryGetProperty("result", out var remoteObject) || !remoteObject.TryGetProperty("value", out var value))
-            return null;
-        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+            return JsonSerializer.SerializeToElement<object?>(null);
+        return value.Clone();
     }
 
     public Task<string?> GetHtmlAsync(CancellationToken cancellationToken = default) =>

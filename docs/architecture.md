@@ -1,38 +1,37 @@
-# Arcana Architecture
+# Arcana architecture
 
-Arcana is Mana's browser runtime and the boundary between Mana and its Obscura-derived rendering engine.
+Arcana has three layers:
 
-## Backend boundary
+1. A pinned upstream Obscura binary pair supplies the browser engine, native CLI, MCP server, and CDP server.
+2. Arcana's .NET host owns discovery, temporary profiles, process cleanup, command stdio, and the CDP client.
+3. Mana-facing page helpers add snapshots, references, forms, capture, session state, and input. Mana UI integration builds on those APIs.
 
-`BrowserRuntime` owns one short-lived Arcana engine process and exposes its loopback CDP endpoint. The first implementation uses:
+## Native engine boundary
 
-- **Arcana engine:** the primary browser, derived from the Obscura engine and exposed through Arcana's policy boundary;
-- **Default-browser fallback:** Windows' registered URL handler, used only after an explicit fallback decision. On this machine that is Opera GX.
+`EngineCommand` forwards the complete engine argument list using `ProcessStartInfo.ArgumentList`. It relays stdin/stdout/stderr as bytes and preserves exit codes. That keeps binary downloads and MCP protocol framing intact. `fetch`, `scrape`, `serve`, and `mcp` use the same implementation as the pinned engine; `engine` supports global flags before the subcommand. Caller-supplied native settings retain upstream semantics.
 
-The runtime does not silently switch to Edge or Chrome. Mana records the Arcana failure and the fallback URL, then opens the user's default browser only when the caller explicitly requests it. This keeps permissions and benchmark results honest.
+`BrowserRuntime` instead supplies a managed configuration: loopback, explicit network opt-in, workers/connections, proxy, user agent, stealth, and an owned profile. It drains engine output pipes to prevent logging deadlocks. It waits for process termination before removing its temporary profile. An explicitly supplied profile is preserved.
 
-## Resource policy
+`EngineLocator` accepts an explicit path or `ARCANA_ENGINE`, then searches installed engine directories and PATH. It deliberately searches for `arcana-engine` and `obscura`, not the Arcana CLI itself. The installer pins a version and SHA-256 in `engine.lock.json`; the engine is a separate download, not committed source.
 
-Every runtime starts with a Mana-owned profile unless the host supplies a deliberate profile directory. All endpoints bind to loopback, and private-network access is disabled unless the host opts in.
+## CDP connection
 
-`BrowserRuntime.DisposeAsync` kills the complete child process tree and removes temporary profiles where Windows permits it. Future versions will add job-object enforcement so cleanup still happens if the host is terminated abruptly.
+One receiver task owns WebSocket reads. Request IDs route replies to independent pending tasks. A semaphore serializes WebSocket writes without blocking on a command's response, permitting interception replies during awaited JavaScript. Commands have a 30-second default transport deadline and support caller cancellation. A canceled command's late response is discarded by ID, not mistaken for the next command's result.
 
-## Agent page surface
+Subscriptions filter by method and attached session. Each subscriber has a bounded channel; overflow closes that subscription with an explicit error without blocking other commands or silently losing events. Peer failure completes pending operations. Disposal cancels the receiver and aborts the socket instead of waiting indefinitely for a close handshake. Incoming messages are bounded to 128 MiB.
 
-`ArcanaPage.SnapshotAsync` returns the URL, title, and up to 500 controls with references, names, roles, link destinations, input types, and disabled state. It excludes hidden/inert controls and does not serialize input values. References use a per-page store and per-document identity, so repeated snapshots preserve identity while document replacement and detached nodes invalidate old references.
+Both browser and page expose `SendCdpAsync`; this preserves access to domains without a dedicated .NET convenience wrapper. The native `serve` endpoint is also available directly to Puppeteer, Playwright, or other CDP clients.
 
-`ClickAsync` and `FillAsync` validate references against the current document and reject hidden or disabled targets. Fill accepts text inputs, textareas, and editable content and emits input/change events. These are synthetic DOM interactions, not trusted hardware events. JavaScript exceptions and navigation errors propagate to callers.
+## Page helpers
 
-Visibility uses DOM/CSS checks rather than layout rectangles because the installed Obscura v0.2.4 engine can return empty rectangles for inline links. This does not guarantee that a control is on screen or unobstructed. Iframes, shadow roots, application readiness, native input, and takeover remain future work.
+The .NET snapshot provides URL, title, readable text, and controls with document-scoped references. Input values are omitted. Weak identity mapping keeps references stable across snapshots; detached nodes and replacement documents invalidate them. Snapshots cap controls/text and mark truncation.
 
-Remaining layers will extend this surface with:
+DOM click/fill/select/check helpers validate live targets. Coordinate and keyboard helpers use the engine's CDP input domain. Neither API operates Windows desktop applications. CSS/DOM visibility is used because Obscura v0.2.4 can return empty layout rectangles for inline links; it does not establish that an element is unobstructed.
 
-1. navigate and wait for a settled page;
-2. DOM snapshot with stable element references;
-3. link, form, and button actions;
-4. screenshots and click annotations;
-5. cookies/storage scoped to a Mana-owned profile;
-6. network request policy and redaction;
-7. visible takeover and hand-back.
+Other helpers cover navigation/history, waits, Markdown/text/links/forms/query, viewport/full-page PNG, raster PDF, cookies, current-origin storage, tabs, and contexts. Exported storage can contain authentication secrets. Restore checks the current origin before replacing local/session storage and merging cookies according to engine semantics.
 
-Obscura's CDP domains are the initial compatibility target. Edge/Chrome can be used as external correctness oracles during development, but they are not Arcana runtime backends.
+## Fallback and remaining integration
+
+Arcana remains primary. `ArcanaFallback.OpenDefaultBrowser` delegates a validated HTTP(S) URL to Windows' registered handler only when explicitly called. It never selects or manages Edge, Chrome, or Opera by name.
+
+Mana approvals, preview/takeover UI, and annotation are host features still to be integrated. Abrupt-host-exit cleanup requires Windows job objects; normal exit/cancellation currently performs deterministic process cleanup. See [the parity matrix](parity.md) for verified capabilities, native delegation, and remaining limits.

@@ -6,16 +6,29 @@ if (args.Length == 0 || args[0] is "help" or "--help" or "-h")
     return;
 }
 
+using var shutdown = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
+try
+{
 switch (args[0].ToLowerInvariant())
 {
+    case "engine":
+    case "serve":
+    case "fetch":
+    case "scrape":
+    case "mcp":
+        var nativeArgs = args[0].Equals("engine", StringComparison.OrdinalIgnoreCase) ? args[1..] : args;
+        var executable = GetOption(nativeArgs, "executable");
+        Environment.ExitCode = await EngineCommand.RunAsync(nativeArgs.Where(a => !a.StartsWith("--executable=", StringComparison.OrdinalIgnoreCase)), executable, shutdown.Token);
+        break;
     case "doctor":
         PrintDoctor();
         break;
     case "run":
-        await RunAsync(args[1..]);
+        await RunAsync(args[1..], shutdown.Token);
         break;
     case "snapshot" when args.Length >= 2:
-        await SnapshotAsync(args[1], args[2..]);
+        await SnapshotAsync(args[1], args[2..], shutdown.Token);
         break;
     case "fallback" when args.Length == 2:
         ArcanaFallback.OpenDefaultBrowser(args[1]);
@@ -25,10 +38,14 @@ switch (args[0].ToLowerInvariant())
         Environment.ExitCode = 2;
         break;
 }
+}
+catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { Environment.ExitCode = 130; }
+catch (Exception error) { Console.Error.WriteLine($"Arcana: {error.Message}"); Environment.ExitCode = 1; }
 
-static async Task SnapshotAsync(string url, string[] args)
+static async Task SnapshotAsync(string url, string[] args, CancellationToken cancellationToken)
 {
-    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    timeout.CancelAfter(TimeSpan.FromSeconds(30));
     await using var runtime = new BrowserRuntime(new ArcanaOptions
     {
         ExecutablePath = GetOption(args, "executable"),
@@ -42,7 +59,7 @@ static async Task SnapshotAsync(string url, string[] args)
         new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 }
 
-static async Task RunAsync(string[] args)
+static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 {
     var options = new ArcanaOptions
     {
@@ -52,15 +69,16 @@ static async Task RunAsync(string[] args)
     };
 
     await using var runtime = new BrowserRuntime(options);
-    await runtime.StartAsync();
+    await runtime.StartAsync(cancellationToken);
     Console.WriteLine($"Arcana engine running on {runtime.Endpoint} (PID {runtime.ProcessId}).");
     Console.WriteLine("Press Ctrl+C or Enter to stop and clean up the process tree.");
-    Console.ReadLine();
+    await Console.In.ReadLineAsync(cancellationToken);
 }
 
 static void PrintDoctor()
 {
-    Console.WriteLine("Arcana engine: arcana.exe, with the Obscura-compatible engine used during development");
+    Console.WriteLine($"Arcana engine: {EngineLocator.Resolve()}");
+    Console.WriteLine($"Parity baseline: Obscura {EngineLocator.Version}");
     Console.WriteLine("Default-browser fallback: Windows default handler, opened only by explicit caller request");
     Console.WriteLine("Default policy: loopback only, one worker, and private-network access disabled.");
 }
@@ -75,6 +93,9 @@ static string? GetOption(string[] args, string name)
 static void PrintHelp()
 {
     Console.WriteLine("Arcana Browser runtime");
+    Console.WriteLine("  fetch|scrape|serve|mcp [engine options] [--executable=PATH]");
+    Console.WriteLine("  engine [all native engine arguments, including global flags]");
+    Console.WriteLine("  engine --help     (complete engine CLI reference)");
     Console.WriteLine("  doctor");
     Console.WriteLine("  run [--executable=PATH] [--port=PORT] [--allow-private-network]");
     Console.WriteLine("  snapshot URL [--executable=PATH] [--allow-private-network]");

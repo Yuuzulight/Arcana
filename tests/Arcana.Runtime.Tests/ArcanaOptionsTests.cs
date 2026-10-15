@@ -15,7 +15,7 @@ public sealed class ArcanaOptionsTests
 
         Assert.AreEqual("127.0.0.1", options.Host);
         Assert.AreEqual(1, options.WorkerCount);
-        Assert.AreEqual(1, options.RendererProcessLimit);
+        Assert.AreEqual(16, options.MaxConnections);
         Assert.IsFalse(options.AllowPrivateNetwork);
     }
 
@@ -31,7 +31,7 @@ public sealed class ArcanaOptionsTests
     public void InvalidResourceLimitsAreRejected()
     {
         Assert.ThrowsException<ArgumentOutOfRangeException>(() => new ArcanaOptions { WorkerCount = 0 }.Validate());
-        Assert.ThrowsException<ArgumentOutOfRangeException>(() => new ArcanaOptions { RendererProcessLimit = 0 }.Validate());
+        Assert.ThrowsException<ArgumentOutOfRangeException>(() => new ArcanaOptions { MaxConnections = 0 }.Validate());
         Assert.ThrowsException<ArgumentOutOfRangeException>(() => new ArcanaOptions { Port = 65536 }.Validate());
     }
 

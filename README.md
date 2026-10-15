@@ -1,77 +1,98 @@
 # Arcana
 
-Arcana is Mana's lightweight, agent-focused browser runtime.
+Arcana is Mana's lightweight, agent-focused browser runtime, built around the Obscura engine. It is a standalone sibling of [Folio](https://github.com/Yuuzulight/Folio): Folio renders self-contained artifacts; Arcana browses and interacts with the web.
 
-It is a standalone sibling project to [Folio](https://github.com/Yuuzulight/Folio). Folio renders Mana's self-contained artifacts; Arcana handles pages that need navigation, JavaScript, a browser session, and agent interaction.
+Arcana now exposes the native CLI, all 37 MCP tools, and the CDP surface of the pinned **Obscura v0.2.4** engine. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [parity matrix and verified limits](docs/parity.md).
 
-## Current status
+This currently uses upstream Obscura binaries, with Arcana owning the host and integration layer. It is not an independent renderer. Arcana is the primary browser; an explicit fallback opens Windows' registered default browser, including Opera GX when that is your default.
 
-The first milestone is the runtime shell:
+## Install, build, and test
 
-- one Arcana-owned lifecycle API around the Obscura-derived engine;
-- loopback-only CDP endpoints by default;
-- Mana-owned temporary profiles and bounded renderer/process settings;
-- explicit private-network opt-in;
-- health probing and deterministic process-tree cleanup;
-- a small CLI for diagnostics and local runtime smoke tests.
-
-The agent page layer now provides structured snapshots of links and controls, document-scoped element references, DOM clicks, and text-field filling. Snapshots omit field values, including passwords. References remain stable across snapshots of the same document and reject detached elements or references from a previous navigation.
-
-Arcana uses the Obscura-derived engine as its primary browser. Edge/Chrome are used only by the external default-browser fallback path when Arcana cannot handle a page. Arcana does not silently start or manage a second browser backend.
-
-## Build and test
-
-Arcana uses the .NET 10 SDK:
+Windows x64 and .NET 10 SDK:
 
 ```powershell
+./tools/fetch-engine.ps1
+# Installs the pinned rendering-and-stealth build; verifies its SHA-256.
 dotnet build Arcana.slnx
+$env:ARCANA_TEST_ENGINE = (Resolve-Path engines/obscura/current/obscura.exe).Path
 dotnet test Arcana.slnx
 ```
 
-Inspect the host for usable browser binaries:
+The engine and its worker stay together. Discovery checks `--executable=PATH`, `ARCANA_ENGINE`, local engine directories, and PATH. Use `-Variant render` with the installer for the ordinary rendering build. Engine tests are explicitly skipped when `ARCANA_TEST_ENGINE` is absent; policy and CDP transport tests still run. CI installs the engine and executes the full suite.
+
+## Browser commands
+
+All native options are available after `engine`. The four native commands also work directly:
+
+```powershell
+dotnet run --project src/Arcana.Cli -- fetch https://example.com --dump markdown
+dotnet run --project src/Arcana.Cli -- fetch https://example.com --screenshot page.png
+dotnet run --project src/Arcana.Cli -- scrape https://example.com https://example.org --eval document.title --concurrency 2
+dotnet run --project src/Arcana.Cli -- serve --port 9222
+dotnet run --project src/Arcana.Cli -- engine --stealth --proxy http://localhost:8080 fetch https://example.com --dump text
+dotnet run --project src/Arcana.Cli -- engine --help
+```
+
+Native stdin/stdout/stderr are relayed as bytes, preserving binary fetch output and MCP JSON lines. Native exit codes propagate. Temporary profiles are cleaned up on completion or Ctrl+C; supply the engine's `--storage-dir` for deliberate persistence. Native flags and environment settings retain upstream semantics.
+
+## MCP
+
+```powershell
+dotnet run --project src/Arcana.Cli -- mcp
+dotnet run --project src/Arcana.Cli -- mcp --http --port 3000
+```
+
+For a client configuration, build first, then set the command to `dotnet` with arguments:
+
+```json
+["C:/ManaAI/Arcana/src/Arcana.Cli/bin/Debug/net10.0/Arcana.Cli.dll", "mcp"]
+```
+
+Adjust the DLL path for your checkout or published build. All upstream browser tools and their schemas are retained, including form interaction, extraction, search, navigation, cookies/storage, tabs, screenshots, and PDF. The underlying MCP server identifies itself as Obscura. HTTP MCP uses upstream bearer authentication and origin controls; see the [tagged upstream guide](https://github.com/h4ckf0r0day/obscura/blob/v0.2.4/docs/Use-the-MCP-server.md).
+
+## .NET runtime
+
+```csharp
+using Arcana.Runtime;
+
+await using var runtime = new BrowserRuntime(new ArcanaOptions());
+await runtime.StartAsync();
+await using var browser = await ArcanaBrowser.ConnectAsync(runtime);
+var page = await browser.NewPageAsync("https://example.com");
+var snapshot = await page.SnapshotAsync();
+Console.WriteLine(snapshot.Text);
+Console.WriteLine(await page.GetMarkdownAsync());
+await File.WriteAllBytesAsync("page.png", await page.CaptureScreenshotAsync(fullPage: true));
+await File.WriteAllBytesAsync("page.pdf", await page.PrintPdfAsync());
+```
+
+Page methods also provide fill/type/select/check, batch forms, waits, history, cookies, storage export/restore, viewport, coordinate input, and scrolling. Browser methods list/attach/close tabs and manage isolated contexts. `SendCdpAsync` exposes additional native methods. Subscribe **before** an operation to retain its events:
+
+```csharp
+using var console = page.Subscribe("Runtime.consoleAPICalled");
+await page.EvaluateAsync("console.log('hello')");
+var message = await console.ReadAsync();
+```
+
+Use `Subscribe("Fetch.requestPaused")` and `SendCdpAsync("Fetch.enable", ...)` for live interception, or `Page.screencastFrame` for a preview consumer. CDP responses are correlated independently of events, so a pending evaluation can receive interception replies. Event streams are bounded and report overflow explicitly.
+
+The managed runtime uses loopback, one worker, 16 connections, an owned temporary profile, and private-network access disabled. `AllowPrivateNetwork`, `Proxy`, `UserAgent`, `Stealth`, `WorkerCount`, and `MaxConnections` are explicit configuration settings. Input values are omitted from the .NET snapshot. Storage exports intentionally contain session secrets.
+
+## Arcana-specific commands
 
 ```powershell
 dotnet run --project src/Arcana.Cli -- doctor
-```
-
-Run Arcana with a Mana-owned profile. The process is cleaned up when the command exits:
-
-```powershell
-dotnet run --project src/Arcana.Cli -- run --executable=C:\path\to\arcana.exe
-```
-
-If an explicit fallback is needed, Arcana asks Windows to open the URL using the registered default browser:
-
-```powershell
+dotnet run --project src/Arcana.Cli -- snapshot https://example.com
+dotnet run --project src/Arcana.Cli -- run
 dotnet run --project src/Arcana.Cli -- fallback https://example.com
 ```
 
-## Agent page controls
+Snapshot references belong to the current .NET page/document. The helper covers the top document, up to 500 controls and 12,000 text characters, and uses DOM/CSS visibility. DOM click/fill and CDP coordinate input are separate APIs. Read the [architecture](docs/architecture.md) and [parity limits](docs/parity.md) before integrating a visual agent.
 
-Capture a page's controls as JSON:
+## Next integration work
 
-```powershell
-dotnet run --project src/Arcana.Cli -- snapshot https://example.com --executable=C:\path\to\obscura.exe
-```
-
-Run the real engine interaction regression alongside the policy tests:
-
-```powershell
-$env:ARCANA_TEST_ENGINE = 'C:\path\to\obscura.exe'
-dotnet test Arcana.slnx
-```
-
-Without that variable, the engine test is reported as skipped. Current snapshots cover the top document, capped at 500 controls. Click/fill use DOM events, which are synthetic; they do not provide native pointer input, hit testing, iframe/shadow-root traversal, or visual takeover. Snapshot capture reads current DOM state and does not wait for an application's asynchronous content to settle.
-
-## Planned milestones
-
-1. Runtime shell and cleanup around the Arcana engine.
-2. Obscura-derived engine adapter and CDP compatibility probes.
-3. Agent page model: navigation, DOM snapshot, links, forms, screenshots, and controlled input.
-4. Mana policy layer: approvals, network rules, profile ownership, redaction, and takeover.
-5. In-Mana preview surface and click-to-annotate support.
-6. Obscura parity suite and measured RAM/CPU startup and page-load budgets.
+Mana approvals, embedded preview, click annotations, visible takeover, crash-resilient Windows job cleanup, and measured performance budgets remain Arcana-specific work. They are separate from access to Obscura's headless engine capabilities.
 
 ## License
 
-Apache-2.0, same as Mana and Folio.
+Apache-2.0. See [NOTICE](NOTICE) for engine provenance.

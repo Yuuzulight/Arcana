@@ -30,14 +30,18 @@ public sealed class BrowserRuntime : IAsyncDisposable
             return;
 
         Port = _options.Port == 0 ? GetFreePort() : _options.Port;
-        var profile = PrepareProfile();
-        var executable = ResolveExecutable(_options);
-        var startInfo = BuildStartInfo(executable, profile, Port);
-        _process = Process.Start(startInfo) ?? throw new InvalidOperationException("The browser process could not be started.");
-        Endpoint = new Uri($"http://{_options.Host}:{Port}/");
-
         try
         {
+            var executable = EngineLocator.Resolve(_options.ExecutablePath);
+            var profile = PrepareProfile();
+            var startInfo = BuildStartInfo(executable, profile, Port);
+            _process = Process.Start(startInfo) ?? throw new InvalidOperationException("The browser process could not be started.");
+            // Drain both pipes so noisy pages cannot block the engine on a full pipe.
+            _process.OutputDataReceived += (_, _) => { };
+            _process.ErrorDataReceived += (_, _) => { };
+            _process.BeginOutputReadLine();
+            _process.BeginErrorReadLine();
+            Endpoint = new Uri($"http://{_options.Host}:{Port}/");
             await WaitForEndpointAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -77,6 +81,7 @@ public sealed class BrowserRuntime : IAsyncDisposable
             {
                 if (!_process.HasExited)
                     _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync().ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {
@@ -161,10 +166,18 @@ public sealed class BrowserRuntime : IAsyncDisposable
         };
 
         startInfo.ArgumentList.Add("serve");
+        startInfo.ArgumentList.Add("--host");
+        startInfo.ArgumentList.Add(_options.Host);
         startInfo.ArgumentList.Add("--port");
         startInfo.ArgumentList.Add(port.ToString());
         startInfo.ArgumentList.Add("--workers");
         startInfo.ArgumentList.Add(_options.WorkerCount.ToString());
+        startInfo.ArgumentList.Add("--max-connections");
+        startInfo.ArgumentList.Add(_options.MaxConnections.ToString());
+        if (_options.Proxy is not null) { startInfo.ArgumentList.Add("--proxy"); startInfo.ArgumentList.Add(_options.Proxy); }
+        if (_options.UserAgent is not null) { startInfo.ArgumentList.Add("--user-agent"); startInfo.ArgumentList.Add(_options.UserAgent); }
+        if (_options.Stealth) startInfo.ArgumentList.Add("--stealth");
+        startInfo.Environment["OBSCURA_ALLOW_PRIVATE_NETWORK"] = _options.AllowPrivateNetwork ? "1" : "0";
         if (!string.IsNullOrWhiteSpace(profile))
         {
             startInfo.ArgumentList.Add("--storage-dir");
@@ -186,27 +199,6 @@ public sealed class BrowserRuntime : IAsyncDisposable
         _ownedProfile = Path.Combine(Path.GetTempPath(), "mana-arcana", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_ownedProfile);
         return _ownedProfile;
-    }
-
-    private static string ResolveExecutable(ArcanaOptions options)
-    {
-        if (!string.IsNullOrWhiteSpace(options.ExecutablePath))
-        {
-            if (!File.Exists(options.ExecutablePath))
-                throw new FileNotFoundException("Arcana backend executable was not found.", options.ExecutablePath);
-            return options.ExecutablePath;
-        }
-
-        var candidates = new[] { "arcana.exe", "arcana", "obscura.exe", "obscura" };
-
-        foreach (var candidate in candidates)
-        {
-            if (Path.IsPathFullyQualified(candidate) && File.Exists(candidate))
-                return candidate;
-            if (!Path.IsPathFullyQualified(candidate))
-                return candidate;
-        }
-        throw new FileNotFoundException("No Arcana engine executable was found. Supply --executable or install Arcana.");
     }
 
     private static int GetFreePort()
