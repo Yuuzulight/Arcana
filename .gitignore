@@ -11,6 +11,9 @@
 *.sln.docstates
 *.env
 
+# Downloaded Arcana/Obscura engine binaries
+/engines/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
