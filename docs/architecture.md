@@ -2,7 +2,7 @@
 
 Arcana has three layers:
 
-1. A pinned upstream Obscura binary pair supplies the browser engine, native CLI, MCP server, and CDP server.
+1. A pinned upstream Obscura source revision supplies the browser engine, native CLI, MCP server, and CDP server. The installer builds its binary pair locally so Arcana can track upstream fixes before a tagged release exists.
 2. Arcana's .NET host owns discovery, temporary profiles, process cleanup, command stdio, and the CDP client.
 3. Mana-facing page helpers add snapshots, references, forms, capture, session state, and input. Mana UI integration builds on those APIs.
 
@@ -28,7 +28,7 @@ The .NET snapshot provides URL, title, readable text, and controls with document
 
 DOM click/fill/select/check helpers validate live targets. Coordinate and keyboard helpers use the engine's CDP input domain. Neither API operates Windows desktop applications. CSS/DOM visibility is used because Obscura v0.2.4 can return empty layout rectangles for inline links; it does not establish that an element is unobstructed.
 
-Other helpers cover navigation/history, waits, Markdown/text/links/forms/query, viewport/full-page PNG, raster PDF, cookies, current-origin storage, tabs, and contexts. Exported storage can contain authentication secrets. Restore checks the current origin before replacing local/session storage and merging cookies according to engine semantics.
+Other helpers cover navigation/history, waits, Markdown/text/links/forms/query, viewport/full-page PNG, raster PDF, cookies, current-origin storage, tabs, and contexts. Exported storage can contain authentication secrets. Restore checks the current origin before replacing local/session storage and merging cookies according to engine semantics. The pinned engine keeps local storage per browser context and session storage per tab across navigation, with local storage persisted only when an explicit profile directory is supplied.
 
 ## Fallback and remaining integration
 

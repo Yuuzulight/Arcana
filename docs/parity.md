@@ -2,15 +2,15 @@
 
 ## Target and meaning
 
-Arcana exposes the complete native CLI, MCP, and CDP surface of **Obscura v0.2.4**, the latest published release checked on 15 October 2026. The version and Windows archive digests are pinned in `engine.lock.json`. The default installer selects the rendering-and-stealth variant and verifies its SHA-256 before extracting both executables. `-Variant render` selects the ordinary rendering build instead.
+Arcana exposes the complete native CLI, MCP, and CDP surface of the pinned **Obscura main revision** (`74028cc23fd1e89bf67b2deac3c6a27f2e634f49`). The default installer checks out that exact source commit and builds the rendering-and-stealth variant. `-Variant render` selects the ordinary rendering build instead. `-UseRelease` selects the retained v0.2.4 archive fallback when a source build is unavailable.
 
 Arcana currently **uses the upstream Obscura binaries**. It adds a .NET host, owned process/profile lifecycle, page API, event transport, and Mana integration boundary. This is access to the same engine's capabilities, not a separately implemented renderer or a claim of Chromium compatibility beyond Obscura's own support. The native MCP server intentionally reports its upstream name/version and retains its original tool schemas. Arcana and native MCP element references belong to different sessions and must not be exchanged.
 
 Baseline references:
 
-- [Tagged CLI reference](https://github.com/h4ckf0r0day/obscura/blob/v0.2.4/docs/CLI-reference.md)
-- [Tagged MCP implementation and tool schemas](https://github.com/h4ckf0r0day/obscura/blob/v0.2.4/crates/obscura-mcp/src/lib.rs)
-- [Tagged CDP domains](https://github.com/h4ckf0r0day/obscura/tree/v0.2.4/crates/obscura-cdp/src/domains)
+- [Pinned CLI reference](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/docs/CLI-reference.md)
+- [Pinned MCP implementation and tool schemas](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/crates/obscura-mcp/src/lib.rs)
+- [Pinned CDP domains](https://github.com/h4ckf0r0day/obscura/tree/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/crates/obscura-cdp/src/domains)
 - [Release artifacts](https://github.com/h4ckf0r0day/obscura/releases/tag/v0.2.4)
 
 ## Capability matrix
@@ -27,7 +27,7 @@ Baseline references:
 | Text, links, forms, structured extraction, search | MCP; .NET snapshots, text, Markdown, links, forms, query | MCP calls plus assertions on .NET fixture content |
 | Fill, type, click, select, checkbox, batch forms | MCP; .NET page methods | Values, event delivery, coordinate click, and real POST submission checked |
 | Wait for selector/text/condition | MCP and .NET methods | Existing content and timeout failure tested |
-| Cookies and storage state | MCP and .NET export/restore | Round trip, clear, origin guard, context isolation |
+| Cookies and storage state | MCP and .NET export/restore | Round trip, clear, origin guard, context isolation, same-origin navigation persistence |
 | Tabs / browser contexts | MCP and .NET browser methods | List, attach, close, switch; isolated cookie jars |
 | Viewport and full-page PNG, raster PDF | MCP and .NET capture methods | PNG/PDF signatures; native full-page capture exercised |
 | Live screencast | CDP events, `Page.startScreencast` / ack / stop | Frame received, decoded, acknowledged, stopped |
@@ -58,7 +58,7 @@ Without `ARCANA_TEST_ENGINE`, engine integration cases are explicitly skipped. C
 - Snapshot visibility uses CSS/DOM state and does not guarantee hit-test visibility. Use coordinate input when visual targeting matters.
 - `.NET NavigateAndWaitAsync` waits for `readyState=complete`; it does not promise SPA/network-idle readiness. Use explicit conditions or the native engine's wait modes.
 - The convenience viewport method bounds dimensions to 8192 CSS pixels; use native CDP for the engine's complete parameter surface. CDP messages are capped at 128 MiB. Subscribers fail explicitly on overflow instead of silently dropping events.
-- `.NET ExportStorageAsync` exports the current origin plus its context's cookie jar; restore requires the page to be on that origin. Native MCP exposes the upstream state format.
+- `.NET ExportStorageAsync` exports the current origin plus its context's cookie jar; restore requires the page to be on that origin. The pinned engine keeps `localStorage` across same-origin navigation, scopes it to the browser context, keeps `sessionStorage` to the tab, and persists local storage under an explicit `--storage-dir`. Native MCP exposes the upstream state format.
 - Temporary profiles are removed on normal completion/cancellation. An abruptly killed host may leave a profile; Windows job-object crash cleanup is not implemented.
 - Native commands preserve explicit upstream flags/environment configuration, including network opt-ins. The managed runtime defaults to loopback, one worker, 16 connections, and private-network access disabled.
 - Mana's approval UI, embedded preview, click annotation, and takeover are separate integration work; they are not supplied by headless Obscura parity.

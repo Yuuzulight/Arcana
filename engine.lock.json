@@ -1,6 +1,8 @@
 {
   "repository": "h4ckf0r0day/obscura",
-  "version": "v0.2.4",
+  "version": "main-74028cc23fd1e89bf67b2deac3c6a27f2e634f49",
+  "sourceCommit": "74028cc23fd1e89bf67b2deac3c6a27f2e634f49",
+  "releaseVersion": "v0.2.4",
   "assets": {
     "render": {
       "name": "obscura-x86_64-windows.zip",

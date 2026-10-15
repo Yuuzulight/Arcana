@@ -22,7 +22,7 @@ public sealed class McpParityTests
         var arcanaTools = await arcana.CallAsync("tools/list", new { }, ct);
         Assert.AreEqual(nativeTools.GetRawText(), arcanaTools.GetRawText(), "Every MCP tool schema must match the pinned engine.");
         var expected = arcanaTools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()!).ToHashSet();
-        Assert.AreEqual(37, expected.Count, "Pinned v0.2.4 rendering build tool inventory.");
+        Assert.AreEqual(38, expected.Count, "Pinned Obscura main rendering build tool inventory.");
         var exercised = new HashSet<string>();
 
         async Task<JsonElement> Tool(string name, object? args = null)
@@ -43,6 +43,7 @@ public sealed class McpParityTests
         await Tool("browser_fill_form", new { fields = new[] { new { selector = "#name", value = "Grace", type = "text" }, new { selector = "#check", value = "", type = "check" } } });
         await Tool("browser_click", new { selector = "#click" });
         StringAssert.Contains((await Tool("browser_evaluate", new { expression = "document.getElementById('result').textContent" })).ToString(), "Clicked");
+        await Tool("browser_wait_for_function", new { function = "document.getElementById('result').textContent === 'Clicked'", timeout = 1000 });
         await Tool("browser_wait_for", new { selector = "#result", timeout = 1 });
         await Tool("browser_wait_for_text", new { text = "Clicked", timeout = 1 });
         await Tool("browser_get_attribute", new { selector = "#name", attribute = "name" });

@@ -2,7 +2,7 @@
 
 Arcana is Mana's lightweight, agent-focused browser runtime, built around the Obscura engine. It is a standalone sibling of [Folio](https://github.com/Yuuzulight/Folio): Folio renders self-contained artifacts; Arcana browses and interacts with the web.
 
-Arcana now exposes the native CLI, all 37 MCP tools, and the CDP surface of the pinned **Obscura v0.2.4** engine. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [parity matrix and verified limits](docs/parity.md).
+Arcana now exposes the native CLI, all 37 MCP tools, and the CDP surface of the pinned **Obscura main revision**. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [parity matrix and verified limits](docs/parity.md).
 
 This currently uses upstream Obscura binaries, with Arcana owning the host and integration layer. It is not an independent renderer. Arcana is the primary browser; an explicit fallback opens Windows' registered default browser, including Opera GX when that is your default.
 
@@ -12,13 +12,13 @@ Windows x64 and .NET 10 SDK:
 
 ```powershell
 ./tools/fetch-engine.ps1
-# Installs the pinned rendering-and-stealth build; verifies its SHA-256.
+# Builds the pinned rendering-and-stealth Obscura revision from source.
 dotnet build Arcana.slnx
 $env:ARCANA_TEST_ENGINE = (Resolve-Path engines/obscura/current/obscura.exe).Path
 dotnet test Arcana.slnx
 ```
 
-The engine and its worker stay together. Discovery checks `--executable=PATH`, `ARCANA_ENGINE`, local engine directories, and PATH. Use `-Variant render` with the installer for the ordinary rendering build. Engine tests are explicitly skipped when `ARCANA_TEST_ENGINE` is absent; policy and CDP transport tests still run. CI installs the engine and executes the full suite.
+The engine and its worker stay together. Discovery checks `--executable=PATH`, `ARCANA_ENGINE`, local engine directories, and PATH. Use `-Variant render` with the installer for the ordinary rendering build. The source installer requires Git, Rust/Cargo, and the Windows C++ build tools. `-UseRelease` remains available for the last tagged upstream archive when a source build is unavailable. Engine tests are explicitly skipped when `ARCANA_TEST_ENGINE` is absent; policy and CDP transport tests still run. CI installs the engine and executes the full suite.
 
 ## Browser commands
 
@@ -48,7 +48,7 @@ For a client configuration, build first, then set the command to `dotnet` with a
 ["C:/ManaAI/Arcana/src/Arcana.Cli/bin/Debug/net10.0/Arcana.Cli.dll", "mcp"]
 ```
 
-Adjust the DLL path for your checkout or published build. All upstream browser tools and their schemas are retained, including form interaction, extraction, search, navigation, cookies/storage, tabs, screenshots, and PDF. The underlying MCP server identifies itself as Obscura. HTTP MCP uses upstream bearer authentication and origin controls; see the [tagged upstream guide](https://github.com/h4ckf0r0day/obscura/blob/v0.2.4/docs/Use-the-MCP-server.md).
+Adjust the DLL path for your checkout or published build. All upstream browser tools and their schemas are retained, including form interaction, extraction, search, navigation, cookies/storage, tabs, screenshots, and PDF. The underlying MCP server identifies itself as Obscura. HTTP MCP uses upstream bearer authentication and origin controls; see the [upstream guide](https://github.com/h4ckf0r0day/obscura/blob/74028cc23fd1e89bf67b2deac3c6a27f2e634f49/docs/Use-the-MCP-server.md).
 
 ## .NET runtime
 
