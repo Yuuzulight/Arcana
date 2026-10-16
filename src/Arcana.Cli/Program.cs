@@ -34,6 +34,9 @@ switch (args[0].ToLowerInvariant())
     case "run":
         await RunAsync(args[1..], shutdown.Token);
         break;
+    case "api":
+        await ApiAsync(args[1..], shutdown.Token);
+        break;
     case "snapshot" when args.Length >= 2:
         await SnapshotAsync(args[1], args[2..], shutdown.Token);
         break;
@@ -93,6 +96,24 @@ static async Task RunAsync(string[] args, CancellationToken cancellationToken)
     await Console.In.ReadLineAsync(cancellationToken);
 }
 
+static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
+{
+    var token = GetOption(args, "token") ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+    var options = new ArcanaOptions
+    {
+        ExecutablePath = GetOption(args, "executable"),
+        AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
+    };
+    await using var runtime = new BrowserRuntime(options);
+    await runtime.StartAsync(cancellationToken);
+    await using var browser = await ArcanaBrowser.ConnectAsync(runtime, cancellationToken);
+    await using var api = new ArcanaApiServer(browser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0);
+    api.Start();
+    var ready = new { apiVersion = ArcanaApiServer.Version, endpoint = api.Endpoint, token };
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ready));
+    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+}
+
 static void PrintDoctor()
 {
     Console.WriteLine($"Arcana engine: {EngineLocator.Resolve()}");
@@ -116,6 +137,7 @@ static void PrintHelp()
     Console.WriteLine("  engine --help     (complete engine CLI reference)");
     Console.WriteLine("  doctor");
     Console.WriteLine("  run [--executable=PATH] [--port=PORT] [--allow-private-network]");
+    Console.WriteLine("  api [--executable=PATH] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
     Console.WriteLine("  snapshot URL [--executable=PATH] [--allow-private-network]");
     Console.WriteLine("  fallback https://example.com");
 }
