@@ -28,6 +28,7 @@ The page API is the engine-neutral boundary for Mana. The current .NET API is th
 - `POST /v1/pages/{pageId}/select` with `{ "ref": "e1", "value": "..." }` selects an option.
 - `POST /v1/pages/{pageId}/press` with `{ "key": "Enter" }` sends a key.
 - `POST /v1/pages/{pageId}/scroll` with `{ "deltaX": 0, "deltaY": 600 }` scrolls the page.
+- `POST /v1/pages/{pageId}/upload` with `{ "ref": "e1", "path": "C:\\..." }` sets a file input selected by a live ref.
 - `GET /v1/pages/{pageId}/screenshot` returns PNG bytes.
 - `POST /v1/pages/{pageId}/evaluate` with `{ "expression": "..." }` evaluates a page expression and returns its JSON value.
 - `POST /v1/pages/{pageId}/wait` accepts `{ "condition": "selector|text|expression", "value": "...", "timeoutMs": 10000 }`.

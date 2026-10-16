@@ -42,6 +42,7 @@ internal static class PageScripts
             let id = state.ids.get(el);
             if (!id) { id = state.prefix + '-e' + (++state.next); state.ids.set(el, id); }
             state.elements.set(id, el);
+            el.setAttribute('aria-ref', id);
             const tag = el.tagName.toLowerCase();
             const labelled = (el.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ').trim();
             const labels = Array.from(el.labels || []).map(l => l.textContent || '').join(' ').trim();

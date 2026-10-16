@@ -182,6 +182,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             case "key": await page.PressKeyAsync(body.Key ?? throw new ArgumentException("key is required."), cancellationToken); break;
             case "type": await page.TypeTextAsync(body.Value ?? "", cancellationToken); break;
             case "mouse-wheel": await page.ScrollAsync(body.DeltaX, body.DeltaY, cancellationToken); break;
+            case "upload": await page.UploadFileAsync(body.Ref ?? throw new ArgumentException("ref is required."), body.Path ?? throw new ArgumentException("path is required."), cancellationToken); break;
             case "navigate": await page.NavigateAndWaitAsync(body.Url ?? throw new ArgumentException("url is required."), cancellationToken); break;
             case "back": await page.GoBackAsync(cancellationToken); break;
             case "forward": await page.GoForwardAsync(cancellationToken); break;
@@ -270,7 +271,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     }
 
     private sealed record CreateRequest(string? Url);
-    private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Key = null, string? Expression = null,
+    private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Key = null, string? Expression = null, string? Path = null,
         int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0);
     private sealed record CdpRequest(string? Method, JsonElement Parameters);
 }

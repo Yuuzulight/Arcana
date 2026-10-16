@@ -45,6 +45,17 @@ public sealed partial class ArcanaPage
             """), cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path)) throw new FileNotFoundException("Upload file was not found.", path);
+        var document = await SendCdpAsync("DOM.getDocument", new { depth = 0 }, cancellationToken).ConfigureAwait(false);
+        var node = await SendCdpAsync("DOM.querySelector", new { nodeId = document.GetProperty("root").GetProperty("nodeId").GetInt32(), selector = $"[aria-ref={JsonSerializer.Serialize(reference)}]" }, cancellationToken).ConfigureAwait(false);
+        var nodeId = node.GetProperty("nodeId").GetInt32();
+        if (nodeId == 0) throw new InvalidOperationException("Element reference is stale.");
+        await SendCdpAsync("DOM.setFileInputFiles", new { files = new[] { Path.GetFullPath(path) }, nodeId }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task TypeAsync(string reference, string text, CancellationToken cancellationToken = default)
     {
         await EvaluateAsync(PageScripts.ElementOperation(_elementStore, reference, "el.focus(); return true;"), cancellationToken).ConfigureAwait(false);
