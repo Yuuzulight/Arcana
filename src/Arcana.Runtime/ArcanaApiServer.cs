@@ -10,6 +10,7 @@ namespace Arcana.Runtime;
 /// <summary>Versioned loopback transport for the engine-neutral page contract.</summary>
 public sealed class ArcanaApiServer : IAsyncDisposable
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ArcanaBrowser _browser;
     private readonly string _token;
     private readonly HttpListener _listener = new();
@@ -143,7 +144,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         {
             await foreach (var evt in events.ReadAllAsync(cancellationToken))
             {
-                var data = JsonSerializer.SerializeToUtf8Bytes(new { type = "event", pageId = id, name = evt.Method, data = evt.Parameters });
+                var data = JsonSerializer.SerializeToUtf8Bytes(new { type = "event", pageId = id, name = evt.Method, data = evt.Parameters }, JsonOptions);
                 await socket.SendAsync(data, WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -180,7 +181,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         response.StatusCode = status;
         if (status == 204) { response.Close(); return; }
         response.ContentType = "application/json; charset=utf-8";
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(value);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes);
         response.Close();
