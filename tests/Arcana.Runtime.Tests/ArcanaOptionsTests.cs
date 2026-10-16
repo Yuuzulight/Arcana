@@ -7,6 +7,12 @@ namespace Arcana.Runtime.Tests;
 public sealed class ArcanaOptionsTests
 {
     [TestMethod]
+    public void PageApiVersionIsExplicitlyVersioned()
+    {
+        Assert.AreEqual("v1", ArcanaOptions.ApiVersion);
+    }
+
+    [TestMethod]
     public void DefaultsAreLoopbackAndBounded()
     {
         var options = new ArcanaOptions();

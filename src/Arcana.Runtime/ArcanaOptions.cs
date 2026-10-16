@@ -2,6 +2,7 @@ namespace Arcana.Runtime;
 
 public sealed record ArcanaOptions
 {
+    public const string ApiVersion = "v1";
     public string Host { get; init; } = "127.0.0.1";
     public int Port { get; init; }
     public string? ExecutablePath { get; init; }

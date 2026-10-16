@@ -2,7 +2,7 @@
 
 Arcana is Mana's lightweight, agent-focused browser runtime, built around the Obscura engine. It is a standalone sibling of [Folio](https://github.com/Yuuzulight/Folio): Folio renders self-contained artifacts; Arcana browses and interacts with the web.
 
-Arcana now exposes the native CLI, all 37 MCP tools, and the CDP surface of the pinned **Obscura main revision**. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [parity matrix and verified limits](docs/parity.md).
+Arcana now exposes the native CLI, all 37 MCP tools, and the CDP surface of the pinned **Obscura main revision**. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. The engine-neutral page contract is versioned as [page API v1](docs/page-api.md); the current work is tracked in [roadmap.md](docs/roadmap.md). See the [parity matrix and verified limits](docs/parity.md).
 
 This currently uses upstream Obscura binaries, with Arcana owning the host and integration layer. It is not an independent renderer. Arcana is the primary browser; an explicit fallback opens Windows' registered default browser, including Opera GX when that is your default.
 
