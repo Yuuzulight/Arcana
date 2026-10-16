@@ -20,17 +20,31 @@ New-Item -ItemType Directory -Force -Path $destination | Out-Null
 $archive = $null
 $sourceDirectory = $null
 try {
+    if ($UseRelease -and $manifest.patches) { throw 'The release build has none of Arcana''s engine patches; build from source (leave out -UseRelease).' }
     if ($manifest.sourceCommit -and -not $UseRelease) {
         if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is required to build the pinned Obscura source.' }
         if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'cargo is required to build the pinned Obscura source.' }
 
         $sourceDirectory = Join-Path ([IO.Path]::GetTempPath()) ('arcana-obscura-source-' + [guid]::NewGuid().ToString('N'))
-        & git clone --filter=blob:none --no-checkout $Repository $sourceDirectory
+        # No line-ending conversion: the patches below are made against the source as upstream stores it.
+        & git -c core.autocrlf=false clone --filter=blob:none --no-checkout $Repository $sourceDirectory
         if ($LASTEXITCODE -ne 0) { throw 'Obscura source clone failed.' }
+        & git -C $sourceDirectory config core.autocrlf false
         & git -C $sourceDirectory fetch --depth 1 origin $manifest.sourceCommit
         if ($LASTEXITCODE -ne 0) { throw 'Pinned Obscura source fetch failed.' }
         & git -C $sourceDirectory checkout --detach $manifest.sourceCommit
         if ($LASTEXITCODE -ne 0) { throw 'Pinned Obscura source checkout failed.' }
+
+        # Arcana's own changes to the engine, in order, each checked against its recorded digest.
+        if ($manifest.patches) {
+            foreach ($patch in $manifest.patches) {
+                $patchFile = Join-Path (Join-Path $PSScriptRoot '..\engine-patches') $patch.name
+                $digest = (Get-FileHash -LiteralPath $patchFile -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($digest -ne $patch.sha256) { throw "Engine patch checksum mismatch: $($patch.name)" }
+                & git -C $sourceDirectory apply --whitespace=nowarn $patchFile
+                if ($LASTEXITCODE -ne 0) { throw "Engine patch did not apply: $($patch.name)" }
+            }
+        }
 
         $features = if ($Variant -eq 'stealth') { 'render,stealth' } else { 'render' }
         & cargo build --manifest-path (Join-Path $sourceDirectory 'Cargo.toml') --release -p obscura-cli --bins --features $features

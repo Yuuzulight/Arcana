@@ -1,7 +1,25 @@
 {
   "repository": "h4ckf0r0day/obscura",
-  "version": "main-030a0e14d143cb9b1788855b3fe1dee7e1b8cc70",
-  "sourceCommit": "030a0e14d143cb9b1788855b3fe1dee7e1b8cc70",
+  "version": "main-bd9529418b7fa975b50eabeac415cfaaa865a588+arcana1",
+  "sourceCommit": "bd9529418b7fa975b50eabeac415cfaaa865a588",
+  "patches": [
+    {
+      "name": "0001-Child-frames-work-for-CDP-clients-contexts-evaluatio.patch",
+      "sha256": "d977b6c1a3aaef6e57af5df6d1d95928f9836cb390da9e5a89a05f33066e4334"
+    },
+    {
+      "name": "0002-Forms-enctype-multipart-form-data-sends-the-chosen-f.patch",
+      "sha256": "9d351d896e6e5810119849494a23b94ea770fed940f50e245a0fead1318ccc7c"
+    },
+    {
+      "name": "0003-Frames-of-a-new-document-are-announced-again.patch",
+      "sha256": "faa872b9b04684a925265191d1d14d7e78e71c6ddd5924b0ecae464b62d5d9ab"
+    },
+    {
+      "name": "0004-A-frame-follows-its-own-links.patch",
+      "sha256": "64656f74f9c4dd8336795cb6ae847122c6673ad1e616b2df73cffec53cc58864"
+    }
+  ],
   "releaseVersion": "v0.2.4",
   "assets": {
     "render": {
