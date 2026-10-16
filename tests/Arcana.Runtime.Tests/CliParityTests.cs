@@ -54,7 +54,7 @@ public sealed class CliParityTests
                     using var accepted = await http.PostAsync("/mcp", new StringContent(request, Encoding.UTF8, "application/json"), ct);
                     accepted.EnsureSuccessStatusCode();
                     using var reply = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync(ct));
-                    StringAssert.Contains(reply.RootElement.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString()!, "030a0e1");
+                    StringAssert.Contains(reply.RootElement.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString()!, PinnedEngineCommit()[..7]);
                 }
             }
             finally
@@ -117,6 +117,19 @@ public sealed class CliParityTests
         {
             if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
         }
+    }
+
+    // The engine commit pinned in engine.lock.json, so a pin bump does not mean editing this test.
+    private static string PinnedEngineCommit()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var lockFile = Path.Combine(directory.FullName, "engine.lock.json");
+            if (!File.Exists(lockFile)) continue;
+            using var pin = JsonDocument.Parse(File.ReadAllText(lockFile));
+            return pin.RootElement.GetProperty("sourceCommit").GetString()!;
+        }
+        throw new FileNotFoundException("engine.lock.json not found above the test binaries.");
     }
 }
 
