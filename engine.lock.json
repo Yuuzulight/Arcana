@@ -1,7 +1,21 @@
 {
   "repository": "h4ckf0r0day/obscura",
-  "version": "main-030a0e14d143cb9b1788855b3fe1dee7e1b8cc70",
-  "sourceCommit": "030a0e14d143cb9b1788855b3fe1dee7e1b8cc70",
+  "version": "main-bd9529418b7fa975b50eabeac415cfaaa865a588+arcana1",
+  "sourceCommit": "bd9529418b7fa975b50eabeac415cfaaa865a588",
+  "patches": [
+    {
+      "name": "0001-Child-frames-work-for-CDP-clients-contexts-evaluatio.patch",
+      "sha256": "2e31c770a61026da11a8cb232c01930edcb7badc41e18fbeab61fd2ac24deb01"
+    },
+    {
+      "name": "0002-Forms-enctype-multipart-form-data-sends-the-chosen-f.patch",
+      "sha256": "d4bb12cb9a15da81441ac6178c282f252fb058e56d129f85272f503a8e2f77d5"
+    },
+    {
+      "name": "0003-Frames-of-a-new-document-are-announced-again.patch",
+      "sha256": "f0bde7dd65a09d44f60b01fbfefb1933ec5f99229667df6fba246d253ccc491b"
+    }
+  ],
   "releaseVersion": "v0.2.4",
   "assets": {
     "render": {

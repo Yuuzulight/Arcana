@@ -1,0 +1,27 @@
+From e88dff0729420269de3b1aa38b4149ff8b1a2be2 Mon Sep 17 00:00:00 2001
+From: Yuuzulight <yuuzulight@gmail.com>
+Date: Sat, 17 Oct 2026 05:54:39 +0800
+Subject: [PATCH 3/3] Frames of a new document are announced again
+
+The engine remembers which child frames it has announced to a client. A new
+document's frames reuse the old ids, so they counted as already announced and
+the client never got their frames or contexts: the second page with frames in
+a session read as empty. A committed document now forgets what was announced.
+---
+ crates/obscura-cdp/src/dispatch.rs | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/crates/obscura-cdp/src/dispatch.rs b/crates/obscura-cdp/src/dispatch.rs
+index 9089c24..11d1934 100644
+--- a/crates/obscura-cdp/src/dispatch.rs
++++ b/crates/obscura-cdp/src/dispatch.rs
+@@ -423,6 +423,9 @@ impl CdpContext {
+                 self.valid_context_ids.remove(&id);
+             }
+         }
++        // The old document's frames went with it. The new document's frames are new to the client even
++        // when they reuse an id, so none of them may count as already announced.
++        self.announced_frames.remove(page_id);
+         let mut contexts = vec![self.allocate_context(page_id, frame_id, origin, "", true)];
+         let mut worlds = self.isolated_worlds.clone();
+         if let Some(page_worlds) = self.page_isolated_worlds.get(page_id) {

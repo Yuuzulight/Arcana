@@ -1,0 +1,206 @@
+From 77e6c114a673571746045e0ece5d15595321268b Mon Sep 17 00:00:00 2001
+From: Yuuzulight <yuuzulight@gmail.com>
+Date: Sat, 17 Oct 2026 05:34:45 +0800
+Subject: [PATCH 2/3] Forms: enctype=multipart/form-data sends the chosen files
+
+A form submit always urlencoded its fields and skipped every file input, so a
+file picked through DOM.setFileInputFiles never reached the server. The submit
+now builds a multipart body (file bytes included) and hands the network layer a
+marker line naming the content type; the network layer sends the rest as bytes.
+---
+ crates/obscura-js/js/bootstrap.js   | 38 +++++++++++++++++++-
+ crates/obscura-net/src/client.rs    | 13 ++++---
+ crates/obscura-net/src/form_body.rs | 55 +++++++++++++++++++++++++++++
+ crates/obscura-net/src/lib.rs       |  1 +
+ 4 files changed, 99 insertions(+), 8 deletions(-)
+ create mode 100644 crates/obscura-net/src/form_body.rs
+
+diff --git a/crates/obscura-js/js/bootstrap.js b/crates/obscura-js/js/bootstrap.js
+index 9d45822..575d80b 100644
+--- a/crates/obscura-js/js/bootstrap.js
++++ b/crates/obscura-js/js/bootstrap.js
+@@ -5336,6 +5336,10 @@ class Element extends Node {
+   }
+   _navigateSubmit(submitter) {
+     const pairs = [];
++    // enctype=multipart/form-data sends each field as a part, and a chosen file as its bytes.
++    const multipart = (this.getAttribute('enctype') || '').toLowerCase() === 'multipart/form-data'
++      && (this.getAttribute('method') || 'GET').toUpperCase() === 'POST';
++    const parts = [];
+     const fields = this.querySelectorAll('input, select, textarea');
+     for (let i = 0; i < fields.length; i++) {
+       const f = fields[i];
+@@ -5345,6 +5349,12 @@ class Element extends Node {
+       const tag = f.localName;
+       const type = (f.getAttribute('type') || '').toLowerCase();
+       if ((type === 'checkbox' || type === 'radio') && !f.checked) continue;
++      if (type === 'file' && multipart) {
++        const chosen = f.files;
++        if (chosen && chosen.length) for (let j = 0; j < chosen.length; j++) parts.push([name, chosen[j]]);
++        else parts.push([name, new File([], '')]);
++        continue;
++      }
+       if (type === 'file' || type === 'reset') continue;
+       if (type === 'button') continue;
+       if (type === 'submit' || tag === 'button') {
+@@ -5363,6 +5373,7 @@ class Element extends Node {
+       }
+       const enc = (s) => encodeURIComponent(s).replace(/%20/g, '+').replace(/!/g, '%21');
+       pairs.push(enc(name) + '=' + enc(val));
++      if (multipart) parts.push([name, String(val)]);
+     }
+ 
+     const action = this.getAttribute('action') || '';
+@@ -5371,6 +5382,28 @@ class Element extends Node {
+     let targetUrl;
+     try { targetUrl = new URL(action, baseUrl).href; } catch(e) { targetUrl = action; }
+ 
++    if (multipart) {
++      // The body is a binary string (one character per byte); the network layer reads the first line as
++      // the content type and sends the rest as bytes.
++      const boundary = '----ObscuraFormBoundary' + Math.random().toString(16).slice(2) + Date.now().toString(16);
++      const utf8 = (s) => unescape(encodeURIComponent(String(s)));
++      let body = '';
++      for (const [partName, value] of parts) {
++        if (typeof value === 'string') {
++          body += '--' + boundary + '\r\nContent-Disposition: form-data; name="' + utf8(partName) + '"\r\n\r\n' + utf8(value) + '\r\n';
++        } else {
++          const bytes = value._bytes || new Uint8Array(0);
++          let data = '';
++          for (let k = 0; k < bytes.length; k += 8192) data += String.fromCharCode.apply(null, bytes.subarray(k, k + 8192));
++          body += '--' + boundary + '\r\nContent-Disposition: form-data; name="' + utf8(partName) + '"; filename="' + utf8(value.name) + '"\r\n'
++            + 'Content-Type: ' + (value.type || 'application/octet-stream') + '\r\n\r\n' + data + '\r\n';
++        }
++      }
++      body += '--' + boundary + '--\r\n';
++      __obscuraCore.ops.op_navigate(targetUrl, 'POST', '\u0000OBSCURA-CT:multipart/form-data; boundary=' + boundary + '\n' + body);
++      return;
++    }
++
+     const encoded = pairs.join('&');
+     if (method === 'POST') {
+       __obscuraCore.ops.op_navigate(targetUrl, 'POST', encoded);
+@@ -11486,7 +11519,10 @@ globalThis.__obscura_setInputFiles = function(el, specs) {
+       bytes = new Uint8Array(bin.length);
+       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+     } catch (_e) { bytes = new Uint8Array(0); }
+-    return new File([bytes], s.name || "", { type: s.type || "" });
++    const file = new File([bytes], s.name || "", { type: s.type || "" });
++    // Kept so a multipart form submit can read the bytes without waiting on the async Blob API.
++    file._bytes = bytes;
++    return file;
+   });
+   el._files = _makeFileList(files);
+   // Mark the events trusted (isTrusted === true), like the Input domain does
+diff --git a/crates/obscura-net/src/client.rs b/crates/obscura-net/src/client.rs
+index b4db284..783607b 100644
+--- a/crates/obscura-net/src/client.rs
++++ b/crates/obscura-net/src/client.rs
+@@ -1129,7 +1129,7 @@ impl ObscuraHttpClient {
+     }
+ 
+     pub async fn post_form(&self, url: &Url, body: &str) -> Result<Response, ObscuraNetError> {
+-        self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), None).await
++        self.fetch_with_method(Method::POST, url, Some(crate::form_body::form_body_bytes(body)), None).await
+     }
+ 
+     /// `post_form` variant of `fetch_with_callbacks`.
+@@ -1139,7 +1139,7 @@ impl ObscuraHttpClient {
+         body: &str,
+         callbacks: Option<&CallbackRegistry>,
+     ) -> Result<Response, ObscuraNetError> {
+-        self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), callbacks)
++        self.fetch_with_method(Method::POST, url, Some(crate::form_body::form_body_bytes(body)), callbacks)
+             .await
+     }
+ 
+@@ -1565,13 +1565,12 @@ impl ObscuraHttpClient {
+                 .headers(headers);
+ 
+             if let Some(ref b) = body {
++                // A multipart form travels with a marker naming its content type (see form_body.rs).
++                let (content_type, payload) = crate::form_body::split_form_body(b);
+                 if method == Method::POST {
+-                    req_builder = req_builder.header(
+-                        reqwest::header::CONTENT_TYPE,
+-                        "application/x-www-form-urlencoded",
+-                    );
++                    req_builder = req_builder.header(reqwest::header::CONTENT_TYPE, content_type);
+                 }
+-                req_builder = req_builder.body(b.clone());
++                req_builder = req_builder.body(payload.to_vec());
+             }
+ 
+             let in_flight = InFlightGuard::new(&self.in_flight);
+diff --git a/crates/obscura-net/src/form_body.rs b/crates/obscura-net/src/form_body.rs
+new file mode 100644
+index 0000000..3e19e3d
+--- /dev/null
++++ b/crates/obscura-net/src/form_body.rs
+@@ -0,0 +1,55 @@
++//! A form body the page hands to the network layer.
++//!
++//! A navigation carries its body as text, which is right for a urlencoded form and wrong for multipart:
++//! file bytes are not UTF-8, and the request needs a different content type. A multipart body therefore
++//! begins with a marker line naming its content type, and the rest is a binary string, one character per
++//! byte. These two functions turn that into the bytes and the content type to send.
++
++const MARKER: &[u8] = b"\0OBSCURA-CT:";
++const URLENCODED: &str = "application/x-www-form-urlencoded";
++
++/// The bytes of a form body: a plain body as it is, a marked one with its binary string decoded.
++pub(crate) fn form_body_bytes(body: &str) -> Vec<u8> {
++    let bytes = body.as_bytes();
++    if !bytes.starts_with(MARKER) {
++        return bytes.to_vec();
++    }
++    let Some(newline) = body.find('\n') else {
++        return bytes.to_vec();
++    };
++    let mut out = bytes[..=newline].to_vec();
++    out.extend(body[newline + 1..].chars().map(|c| c as u32 as u8));
++    out
++}
++
++/// The content type and payload to send for a body made by [`form_body_bytes`].
++pub(crate) fn split_form_body(body: &[u8]) -> (String, &[u8]) {
++    if let Some(rest) = body.strip_prefix(MARKER) {
++        if let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
++            if let Ok(content_type) = std::str::from_utf8(&rest[..newline]) {
++                return (content_type.to_string(), &rest[newline + 1..]);
++            }
++        }
++    }
++    (URLENCODED.to_string(), body)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_plain_form_body_is_sent_urlencoded_and_unchanged() {
++        let bytes = form_body_bytes("a=1&b=%C3%A9");
++        assert_eq!(split_form_body(&bytes), (URLENCODED.to_string(), &b"a=1&b=%C3%A9"[..]));
++    }
++
++    #[test]
++    fn a_marked_body_keeps_its_content_type_and_every_byte() {
++        let text = "\0OBSCURA-CT:multipart/form-data; boundary=xyz\n--xyz\r\n\u{00ff}\u{0000}\u{0080}\r\n--xyz--\r\n";
++        let bytes = form_body_bytes(text);
++        let (content_type, payload) = split_form_body(&bytes);
++        assert_eq!(content_type, "multipart/form-data; boundary=xyz");
++        assert_eq!(payload, &b"--xyz\r\n\xff\x00\x80\r\n--xyz--\r\n"[..]);
++    }
++}
+diff --git a/crates/obscura-net/src/lib.rs b/crates/obscura-net/src/lib.rs
+index 75661e5..8d20ef3 100644
+--- a/crates/obscura-net/src/lib.rs
++++ b/crates/obscura-net/src/lib.rs
+@@ -27,5 +27,6 @@ pub use wreq_client::{
+     STEALTH_UA_PLATFORM_VERSION, STEALTH_USER_AGENT,
+ };
+ 
++mod form_body;
+ mod operator_hint;
+ pub use operator_hint::private_network_error_hint;

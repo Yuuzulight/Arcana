@@ -1,0 +1,486 @@
+From bd7cbbecd35d0073926163eeee812401c3d69aae Mon Sep 17 00:00:00 2001
+From: Yuuzulight <yuuzulight@gmail.com>
+Date: Sat, 17 Oct 2026 05:34:44 +0800
+Subject: [PATCH 1/3] Child frames work for CDP clients: contexts, evaluation,
+ describeNode
+
+A client could list a child frame but not look into it: the frame had no
+execution context, Runtime commands always ran in the page's realm, and
+DOM.describeNode never said which frame owned an element. Playwright and
+Puppeteer need all three to read or act inside an iframe.
+
+- announce a default execution context (and the client's isolated worlds)
+  when a child frame appears
+- aim Runtime and DOM commands at the frame that holds the object, or whose
+  context, the command names; object ids minted in a frame carry that frame
+- describeNode reports frameId on <html> and on <iframe>/<frame>, and
+  describes nodes of a child frame from the object itself
+- setFileInputFiles resolves an object id in whatever frame holds it
+- a frameset document becomes a body of iframes, so its frames load
+- a frame realm gets its object registry on first use, however it was made
+---
+ crates/obscura-browser/src/page.rs     | 44 +++++++++++++
+ crates/obscura-cdp/src/dispatch.rs     | 68 ++++++++++++++++++++
+ crates/obscura-cdp/src/domains/dom.rs  | 86 +++++++++++++++++++++++---
+ crates/obscura-cdp/src/domains/page.rs |  2 +-
+ crates/obscura-js/src/frame.rs         |  1 +
+ crates/obscura-js/src/runtime.rs       | 70 ++++++++++++++++++---
+ 6 files changed, 255 insertions(+), 16 deletions(-)
+
+diff --git a/crates/obscura-browser/src/page.rs b/crates/obscura-browser/src/page.rs
+index f24e63f..ec3350d 100644
+--- a/crates/obscura-browser/src/page.rs
++++ b/crates/obscura-browser/src/page.rs
+@@ -357,6 +357,32 @@ const MAX_STYLESHEET_IMPORT_DEPTH: u8 = 4;
+ const MAX_STYLESHEET_RESOURCES: usize = 128;
+ const DEFAULT_NAVIGATION_TIMEOUT_MS: u64 = 30_000;
+ 
++/// Turns a frameset document into a body of iframes, so its frames load, run and can be read like
++/// any other frame. The rows/cols layout is not kept; the frames come out in document order.
++const FRAMESET_TO_IFRAMES: &str = r#"(function() {
++  var sets = document.querySelectorAll('frameset');
++  if (!sets.length) return;
++  var body = document.body;
++  if (!body || body.localName !== 'body') {
++    body = document.createElement('body');
++    document.documentElement.appendChild(body);
++  }
++  var frames = sets[0].querySelectorAll('frame');
++  for (var i = 0; i < frames.length; i++) {
++    var frame = frames[i];
++    var iframe = document.createElement('iframe');
++    var names = ['name', 'id', 'scrolling', 'frameborder', 'title'];
++    for (var j = 0; j < names.length; j++) {
++      if (frame.hasAttribute(names[j])) iframe.setAttribute(names[j], frame.getAttribute(names[j]));
++    }
++    iframe.setAttribute('width', '100%');
++    iframe.setAttribute('height', '300');
++    body.appendChild(iframe);
++    if (frame.hasAttribute('src')) iframe.setAttribute('src', frame.getAttribute('src'));
++  }
++  if (sets[0].parentNode) sets[0].parentNode.removeChild(sets[0]);
++})();"#;
++
+ /// The first navigation counts. The low default stops a page that resets
+ /// `location` on every load.
+ const DEFAULT_NAVIGATION_CHAIN_LIMIT: usize = 10;
+@@ -1623,6 +1649,21 @@ impl Page {
+         queued_new || scripts_ran || delivered
+     }
+ 
++    /// Aims page scripts at one child frame's realm, or back at the page with `None`.
++    pub fn set_active_frame(&mut self, frame: Option<u32>) {
++        if let Some(js) = &mut self.js {
++            js.set_active_frame(frame);
++        }
++    }
++
++    /// The realm number of the child frame a CDP frame id (`{page}-frame-{n}`) names.
++    pub fn frame_number(&self, cdp_frame_id: &str) -> Option<u32> {
++        cdp_frame_id
++            .strip_prefix(&format!("{}-frame-", self.frame_id))?
++            .parse()
++            .ok()
++    }
++
+     /// URLs of the page's live child frames, in creation order.
+     pub fn frame_urls(&self) -> Vec<String> {
+         self.frames
+@@ -3599,6 +3640,9 @@ impl Page {
+             js.reset_animation_timeline();
+         }
+         if let Some(js) = &mut self.js {
++            // A frameset document has frames where a body would be. Frames load the way iframes do,
++            // so each <frame> becomes an <iframe> in a body, and the frameset layout is dropped.
++            let _ = js.execute_script("<frameset>", FRAMESET_TO_IFRAMES);
+             let _ = js.execute_script("<iframe-load>",
+                 "(function() { var iframes = document.querySelectorAll('iframe[src]'); for (var i = 0; i < iframes.length; i++) { var src = iframes[i].getAttribute('src'); if (src && src !== 'about:blank') iframes[i]._loadIframeSrc(src); } })()");
+         }
+diff --git a/crates/obscura-cdp/src/dispatch.rs b/crates/obscura-cdp/src/dispatch.rs
+index ba2bc7f..9089c24 100644
+--- a/crates/obscura-cdp/src/dispatch.rs
++++ b/crates/obscura-cdp/src/dispatch.rs
+@@ -726,6 +726,28 @@ fn is_v8_free_method(method: &str) -> bool {
+     )
+ }
+ 
++/// The child frame a `Runtime` or `DOM` command is about, if it is not about the page itself: the
++/// frame that holds the object the command names, else the frame of the execution context it names.
++fn target_frame(req: &CdpRequest, ctx: &CdpContext) -> Option<u32> {
++    if !matches!(req.method.split('.').next(), Some("Runtime" | "DOM")) {
++        return None;
++    }
++    if let Some(object_id) = req.params.get("objectId").and_then(|value| value.as_str()) {
++        return obscura_js::runtime::ObscuraJsRuntime::frame_of_object_id(object_id);
++    }
++    let by_id = ["contextId", "executionContextId"]
++        .iter()
++        .find_map(|key| req.params.get(*key).and_then(|value| value.as_i64()))
++        .and_then(|id| ctx.context_by_id(id));
++    let by_unique = req
++        .params
++        .get("uniqueContextId")
++        .and_then(|value| value.as_str())
++        .and_then(|unique| ctx.context_by_unique_id(unique));
++    let record = by_id.or(by_unique)?;
++    ctx.get_session_page(&req.session_id)?.frame_number(&record.frame_id)
++}
++
+ pub async fn dispatch(req: &CdpRequest, ctx: &mut CdpContext) -> CdpResponse {
+     // headless_chrome (and older Puppeteer) wrap every CDP call inside
+     // Target.sendMessageToTarget. Unwrap and recurse BEFORE acquiring the
+@@ -798,6 +820,15 @@ pub async fn dispatch(req: &CdpRequest, ctx: &mut CdpContext) -> CdpResponse {
+         }
+     };
+ 
++    // A command that names an object or an execution context of a child frame runs in that frame's
++    // realm, not the page's: the document it reads and the globals it sees are the frame's.
++    let aimed_at_frame = target_frame(req, ctx);
++    if aimed_at_frame.is_some() {
++        if let Some(page) = ctx.get_session_page_mut(&req.session_id) {
++            page.set_active_frame(aimed_at_frame);
++        }
++    }
++
+     let result = match domain {
+         "Target" => domains::target::handle(method, &req.params, ctx, &req.session_id).await,
+         "Browser" => domains::browser::handle(method, &req.params).await,
+@@ -834,6 +865,12 @@ pub async fn dispatch(req: &CdpRequest, ctx: &mut CdpContext) -> CdpResponse {
+         _ => Err(format!("Unknown domain: {}", domain)),
+     };
+ 
++    if aimed_at_frame.is_some() {
++        if let Some(page) = ctx.get_session_page_mut(&req.session_id) {
++            page.set_active_frame(None);
++        }
++    }
++
+     #[cfg(feature = "render")]
+     if result.is_ok()
+         && domains::page::command_can_change_screencast_frame(&req.method)
+@@ -1067,6 +1104,8 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
+     let mut events: Vec<CdpEvent> = Vec::new();
+     let mut announced: HashMap<String, Vec<String>> = HashMap::new();
+     let mut detached = Vec::new();
++    // (page, frame id, origin) of frames that are new to the client; each gets its execution contexts.
++    let mut arrived: Vec<(String, String, String)> = Vec::new();
+     for page in &ctx.pages {
+         let Some(session_ids) = page_to_sessions.get(&page.id) else {
+             continue;
+@@ -1083,6 +1122,11 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
+             if known.is_some_and(|ids| ids.iter().any(|seen| seen == id)) {
+                 continue;
+             }
++            arrived.push((
++                page.id.clone(),
++                id.to_string(),
++                frame["url"].as_str().unwrap_or_default().to_string(),
++            ));
+             for session_id in session_ids {
+                 // Attach before navigate: a client builds its frame from the
+                 // attach event and treats a navigation of a frame it has never
+@@ -1119,6 +1163,30 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
+         }
+         announced.insert(page.id.clone(), live_ids);
+     }
++    // A client reads and evaluates inside a frame through that frame's execution contexts; without
++    // them a frame is a name it can list but never look into.
++    for (page_id, frame_id, origin) in arrived {
++        let mut contexts = vec![ctx.allocate_context(&page_id, &frame_id, &origin, "", true)];
++        let mut worlds = ctx.isolated_worlds.clone();
++        if let Some(page_worlds) = ctx.page_isolated_worlds.get(&page_id) {
++            for world in page_worlds {
++                if !worlds.contains(world) {
++                    worlds.push(world.clone());
++                }
++            }
++        }
++        for world in worlds {
++            contexts.push(ctx.allocate_context(&page_id, &frame_id, &origin, &world, false));
++        }
++        for context in &contexts {
++            for session_id in ctx.runtime_sessions_for_page(&page_id) {
++                events.push(crate::domains::runtime::execution_context_created_event(
++                    context,
++                    Some(session_id),
++                ));
++            }
++        }
++    }
+     for (page_id, frame_id, page_sessions) in detached {
+         let removed = ctx.remove_frame_contexts(&page_id, &frame_id);
+         let runtime_sessions = ctx.runtime_sessions_for_page(&page_id);
+diff --git a/crates/obscura-cdp/src/domains/dom.rs b/crates/obscura-cdp/src/domains/dom.rs
+index 47d53a7..e9c1051 100644
+--- a/crates/obscura-cdp/src/domains/dom.rs
++++ b/crates/obscura-cdp/src/domains/dom.rs
+@@ -137,6 +137,53 @@ pub async fn handle(
+             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
+             let depth = params.get("depth").and_then(|v| v.as_i64()).unwrap_or(0);
+ 
++            // A node in a child frame has a number in that frame's own tree, so it is described from
++            // the object itself (the command already runs in that frame's realm).
++            if let Some(oid) = params
++                .get("objectId")
++                .and_then(|v| v.as_str())
++                .filter(|oid| obscura_js::runtime::ObscuraJsRuntime::frame_of_object_id(oid).is_some())
++            {
++                let code = format!(
++                    "(function() {{ var o = globalThis.__obscura_objects[{}]; \
++                     if (!o || typeof o.nodeType !== 'number') return null; \
++                     var attrs = []; \
++                     if (o.attributes) for (var i = 0; i < o.attributes.length; i++) attrs.push(o.attributes[i].name, o.attributes[i].value); \
++                     var root = o.nodeType === 9 || (o.parentNode && o.parentNode.nodeType === 9); \
++                     return JSON.stringify({{ nid: typeof o._nid === 'number' ? o._nid : 0, type: o.nodeType, name: o.nodeName, \
++                       local: o.localName || '', attrs: attrs, kids: o.childNodes ? o.childNodes.length : 0, root: !!root, \
++                       frame: globalThis.__obscura_frameId || 0, content: o._frameId || 0 }}); }})()",
++                    crate::util::object_id_literal(oid)
++                );
++                let described: Value = page
++                    .evaluate(&code)
++                    .as_str()
++                    .and_then(|text| serde_json::from_str(text).ok())
++                    .ok_or_else(|| format!("objectId {oid} could not be resolved to a node"))?;
++                let number = |key: &str| described[key].as_u64().unwrap_or(0);
++                let frame_id = if number("content") > 0 {
++                    Some(super::page::child_frame_id(&page.frame_id, number("content") as u32))
++                } else if described["root"].as_bool().unwrap_or(false) {
++                    Some(super::page::child_frame_id(&page.frame_id, number("frame") as u32))
++                } else {
++                    None
++                };
++                let mut node = json!({
++                    "nodeId": number("nid"),
++                    "backendNodeId": number("nid"),
++                    "nodeType": number("type"),
++                    "nodeName": described["name"],
++                    "localName": described["local"],
++                    "nodeValue": "",
++                    "childNodeCount": number("kids"),
++                    "attributes": described["attrs"],
++                });
++                if let Some(frame_id) = frame_id {
++                    node["frameId"] = json!(frame_id);
++                }
++                return Ok(json!({ "node": node }));
++            }
++
+             let node_id = if let Some(nid) = params.get("nodeId").and_then(|v| v.as_u64())
+                 .or_else(|| params.get("backendNodeId").and_then(|v| v.as_u64()))
+             {
+@@ -158,9 +205,26 @@ pub async fn handle(
+                 return Err("nodeId or objectId required".to_string());
+             };
+ 
+-            let node = page.with_dom(|dom| {
++            let mut node = page.with_dom(|dom| {
+                 serialize_node(dom, NodeId::new(node_id as u32), depth as u32, 0)
+             }).unwrap_or(json!(null));
++            // A client finds out which frame owns a document, and which frame an <iframe> holds, from
++            // the `frameId` on the page's <html> and on the frame element.
++            match node["nodeName"].as_str().unwrap_or("") {
++                "HTML" | "#document" => {
++                    node["frameId"] = json!(page.frame_id.clone());
++                }
++                "IFRAME" | "FRAME" => {
++                    let code = format!(
++                        "(function() {{ var o = globalThis._wrap && globalThis._wrap({node_id}); return o && o._frameId ? o._frameId : 0; }})()"
++                    );
++                    let content = page.evaluate(&code).as_f64().unwrap_or(0.0) as u32;
++                    if content > 0 {
++                        node["frameId"] = json!(super::page::child_frame_id(&page.frame_id, content));
++                    }
++                }
++                _ => {}
++            }
+             Ok(json!({ "node": node }))
+         }
+         "resolveNode" => {
+@@ -267,7 +331,7 @@ pub async fn handle(
+             if !page.context.allow_file_access {
+                 return Err("DOM.setFileInputFiles is disabled. Restart with `obscura serve --allow-file-access` to enable local file uploads.".to_string());
+             }
+-            let node_id = resolve_node_id(page, params)?;
++            let node_id = if params.get("objectId").is_some() { 0 } else { resolve_node_id(page, params)? };
+             let paths: Vec<String> = params
+                 .get("files")
+                 .and_then(|v| v.as_array())
+@@ -287,11 +351,19 @@ pub async fn handle(
+             }
+ 
+             let specs_json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
+-            let code = format!(
+-                "(function() {{ var el = globalThis._wrap && globalThis._wrap({0}); \
+-                 if (el && globalThis.__obscura_setInputFiles) {{ globalThis.__obscura_setInputFiles(el, {1}); return true; }} return false; }})()",
+-                node_id, specs_json
+-            );
++            // An object id names the element in whichever frame holds it; a node id is the page's own tree.
++            let code = match params.get("objectId").and_then(|v| v.as_str()) {
++                Some(oid) => format!(
++                    "(function() {{ var el = globalThis.__obscura_objects[{0}]; \
++                     if (el && globalThis.__obscura_setInputFiles) {{ globalThis.__obscura_setInputFiles(el, {1}); return true; }} return false; }})()",
++                    crate::util::object_id_literal(oid), specs_json
++                ),
++                None => format!(
++                    "(function() {{ var el = globalThis._wrap && globalThis._wrap({0}); \
++                     if (el && globalThis.__obscura_setInputFiles) {{ globalThis.__obscura_setInputFiles(el, {1}); return true; }} return false; }})()",
++                    node_id, specs_json
++                ),
++            };
+             let _ = page.evaluate(&code);
+             Ok(json!({}))
+         }
+diff --git a/crates/obscura-cdp/src/domains/page.rs b/crates/obscura-cdp/src/domains/page.rs
+index 9b333b9..e25304a 100644
+--- a/crates/obscura-cdp/src/domains/page.rs
++++ b/crates/obscura-cdp/src/domains/page.rs
+@@ -15,7 +15,7 @@ const DEFAULT_SCREENSHOT_QUALITY: i64 = 80;
+ /// child's protocol id is derived from its page's. It stays stable for the
+ /// life of the frame, which is what lets a client match an attach event to the
+ /// frame it later sees in the tree.
+-fn child_frame_id(page_frame_id: &str, frame_id: u32) -> String {
++pub(crate) fn child_frame_id(page_frame_id: &str, frame_id: u32) -> String {
+     format!("{page_frame_id}-frame-{frame_id}")
+ }
+ 
+diff --git a/crates/obscura-js/src/frame.rs b/crates/obscura-js/src/frame.rs
+index 31b7049..ffc4b22 100644
+--- a/crates/obscura-js/src/frame.rs
++++ b/crates/obscura-js/src/frame.rs
+@@ -136,6 +136,7 @@ impl FrameRealm {
+                 &format!(
+                     "globalThis.__obscura_frameId = {frame_id};\
+                      globalThis.__obscura_parentFrameId = {parent_frame_id};\
++                     globalThis.__obscura_objects = {{}}; globalThis.__obscura_oid = 0;\
+                      globalThis.__obscura_init();"
+                 ),
+             )
+diff --git a/crates/obscura-js/src/runtime.rs b/crates/obscura-js/src/runtime.rs
+index 114dc7c..f969789 100644
+--- a/crates/obscura-js/src/runtime.rs
++++ b/crates/obscura-js/src/runtime.rs
+@@ -263,6 +263,9 @@ pub struct ObscuraJsRuntime {
+     object_store: HashMap<String, String>,
+     evaluation_recipes: HashMap<String, String>,
+     object_counter: u64,
++    /// The child frame a CDP command is aimed at. While set, page scripts run in that
++    /// frame's realm instead of the page's, and object ids minted carry the frame.
++    active_frame: Option<u32>,
+     import_map: Rc<RefCell<ImportMap>>,
+     /// Loader-owned signal for pending dynamic-import graph fetches. This is
+     /// intentionally separate from page fetch/XHR activity so analytics does
+@@ -680,6 +683,7 @@ impl ObscuraJsRuntime {
+             object_store: HashMap::new(),
+             evaluation_recipes: HashMap::new(),
+             object_counter: 0,
++            active_frame: None,
+             import_map,
+             module_load_activity,
+             isolate_handle,
+@@ -1196,13 +1200,57 @@ impl ObscuraJsRuntime {
+         name: &'static str,
+         source: String,
+     ) -> Result<deno_core::v8::Global<deno_core::v8::Value>, String> {
+-        let result = self
+-            .runtime()
+-            .execute_script(name, source)
+-            .map_err(|error| error.to_string());
++        let result = self.run_in_active_realm(name, source);
+         self.finish_heap_checked(result)
+     }
+ 
++    /// Aims page scripts at one child frame's realm (`None` is the page again).
++    pub fn set_active_frame(&mut self, frame_id: Option<u32>) {
++        self.active_frame = frame_id;
++    }
++
++    /// The child frame an object id was minted in, if it was not the page's.
++    pub fn frame_of_object_id(object_id: &str) -> Option<u32> {
++        let rest = object_id.split("\"injectedScriptId\":").nth(1)?;
++        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
++        let script: u32 = digits.parse().ok()?;
++        script.checked_sub(1).filter(|frame| *frame > 0)
++    }
++
++    /// Runs a script in the active frame's realm, or in the page's own realm.
++    fn run_in_active_realm(
++        &mut self,
++        name: &'static str,
++        source: String,
++    ) -> Result<deno_core::v8::Global<deno_core::v8::Value>, String> {
++        use deno_core::v8;
++
++        let realm = self
++            .active_frame
++            .and_then(|frame| self.realm_states().borrow().context(frame));
++        let Some(realm) = realm else {
++            return self.runtime().execute_script(name, source).map_err(|error| error.to_string());
++        };
++        let mut entered = self.runtime();
++        let isolate = entered.v8_isolate();
++        v8::scope!(let scope, isolate);
++        let context = v8::Local::new(scope, &realm);
++        let scope = &mut v8::ContextScope::new(scope, context);
++        v8::tc_scope!(let tc_scope, scope);
++        // A frame realm can be made by more than one path; the object registry the commands store into
++        // is created here the first time they run in it, so none of those paths has to remember to.
++        let source = format!("globalThis.__obscura_objects || (globalThis.__obscura_objects = {{}});\n{source}");
++        let code = v8::String::new(tc_scope, &source).ok_or("source too large")?;
++        let script = match v8::Script::compile(tc_scope, code, None) {
++            Some(script) => script,
++            None => return Err(exception_text(tc_scope)),
++        };
++        match script.run(tc_scope) {
++            Some(value) => Ok(v8::Global::new(tc_scope, value)),
++            None => Err(exception_text(tc_scope)),
++        }
++    }
++
+     /// Parse and merge an inline document import map. Rules which would alter
+     /// already-observed module resolutions are discarded while unrelated new
+     /// rules remain available, matching Chromium's multiple-map model.
+@@ -2863,8 +2911,9 @@ impl ObscuraJsRuntime {
+         let Some(record) = self.pending_cdp_evaluations.get(&pending.object_id).cloned() else {
+             return false;
+         };
++        let realm = self.active_frame.and_then(|frame| self.realm_states().borrow().context(frame));
+         let mut entered = self.runtime();
+-        let context = entered.main_context();
++        let context = realm.unwrap_or_else(|| entered.main_context());
+         v8::scope_with_context!(scope, entered.v8_isolate(), context);
+         let Ok(record) = v8::Local::<v8::Object>::try_from(v8::Local::new(scope, record)) else {
+             return false;
+@@ -2882,9 +2931,11 @@ impl ObscuraJsRuntime {
+         let oid = pending.object_id;
+         let record = self.pending_cdp_evaluations.remove(&oid)
+             .ok_or("Evaluation result unavailable")?;
++        // The result is stored in the registry of the realm that ran the call (a child frame's own).
++        let realm = self.active_frame.and_then(|frame| self.realm_states().borrow().context(frame));
+         let (value, rejected) = {
+             let mut entered = self.runtime();
+-            let context = entered.main_context();
++            let context = realm.unwrap_or_else(|| entered.main_context());
+             v8::scope_with_context!(scope, entered.v8_isolate(), context);
+             v8::tc_scope!(let scope, scope);
+             let record = v8::Local::<v8::Object>::try_from(v8::Local::new(scope, record))
+@@ -4011,7 +4062,7 @@ impl ObscuraJsRuntime {
+         self.begin_javascript_task();
+         let wrapped = Self::wrap_expression(expression);
+         let token = self.arm_watchdog(timeout);
+-        let result = self.runtime().execute_script("<eval>", wrapped);
++        let result = self.run_in_active_realm("<eval>", wrapped);
+         let fired = self.disarm_watchdog(token);
+         if self.recover_heap_limit() {
+             return Err("JavaScript heap limit exceeded; execution terminated".to_string());
+@@ -4233,7 +4284,10 @@ impl ObscuraJsRuntime {
+     }
+     fn make_oid(&self, _counter: u64) -> String {
+         let id = NEXT_CDP_OBJECT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+-        format!("{{\"injectedScriptId\":1,\"id\":{}}}", id)
++        // The script id is 1 for the page and 1 + frame for a child frame, so a later command that
++        // names the object knows which realm holds it.
++        let script = 1 + self.active_frame.unwrap_or(0);
++        format!("{{\"injectedScriptId\":{},\"id\":{}}}", script, id)
+     }
+ 
+     fn wrap_expression(expression: &str) -> String {
