@@ -8,6 +8,13 @@ if (args.Length == 0 || args[0] is "help" or "--help" or "-h")
 
 using var shutdown = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
+// --arcana-parent-pid=N: stop when the process that started us is gone (it can't signal us if it crashes).
+var parentArg = args.FirstOrDefault(a => a.StartsWith("--arcana-parent-pid=", StringComparison.Ordinal));
+if (parentArg is not null)
+{
+    args = args.Where(a => a != parentArg).ToArray();
+    WatchParent(parentArg["--arcana-parent-pid=".Length..], shutdown);
+}
 try
 {
 switch (args[0].ToLowerInvariant())
@@ -41,6 +48,17 @@ switch (args[0].ToLowerInvariant())
 }
 catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { Environment.ExitCode = 130; }
 catch (Exception error) { Console.Error.WriteLine($"Arcana: {error.Message}"); Environment.ExitCode = 1; }
+
+static void WatchParent(string pid, CancellationTokenSource shutdown)
+{
+    if (!int.TryParse(pid, out var id)) return;
+    try
+    {
+        var parent = System.Diagnostics.Process.GetProcessById(id);
+        _ = parent.WaitForExitAsync().ContinueWith(_ => shutdown.Cancel());
+    }
+    catch (ArgumentException) { shutdown.Cancel(); } // already gone
+}
 
 static async Task SnapshotAsync(string url, string[] args, CancellationToken cancellationToken)
 {
