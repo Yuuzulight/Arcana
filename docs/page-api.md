@@ -14,6 +14,7 @@ The page API is the engine-neutral boundary for Mana. The current .NET API is th
 
 ## Page lifecycle
 
+- `GET /v1/tabs` lists live page targets with stable `targetId`, URL, and title fields.
 - `POST /v1/pages` with `{ "url": "https://..." }` creates a page and returns `{ "pageId": "...", "url": "..." }`.
 - `DELETE /v1/pages/{pageId}` closes the page.
 - `POST /v1/pages/{pageId}/navigate` with `{ "url": "https://..." }` navigates and waits for `readyState=complete`.
@@ -28,6 +29,7 @@ The page API is the engine-neutral boundary for Mana. The current .NET API is th
 - `POST /v1/pages/{pageId}/press` with `{ "key": "Enter" }` sends a key.
 - `POST /v1/pages/{pageId}/scroll` with `{ "deltaX": 0, "deltaY": 600 }` scrolls the page.
 - `GET /v1/pages/{pageId}/screenshot` returns PNG bytes.
+- `POST /v1/pages/{pageId}/evaluate` with `{ "expression": "..." }` evaluates a page expression and returns its JSON value.
 - `POST /v1/pages/{pageId}/wait` accepts `{ "condition": "selector|text|expression", "value": "...", "timeoutMs": 10000 }`.
 
 Stable refs are scoped to a page and document. A navigation, document replacement, or detached element invalidates old refs and returns `409` with code `stale_reference`; callers must request a new snapshot. Input values and password contents never appear in snapshots or event payloads.
@@ -36,6 +38,7 @@ Stable refs are scoped to a page and document. A navigation, document replacemen
 
 - `GET /v1/pages/{pageId}/cookies` and `PUT /v1/pages/{pageId}/cookies` expose cookie state.
 - `GET /v1/pages/{pageId}/storage` and `PUT /v1/pages/{pageId}/storage` expose origin-scoped storage state.
+- `POST /v1/pages/{pageId}/cdp` with `{ "method": "...", "parameters": { ... } }` is the explicit extension point for request interception, screencast control, and engine diagnostics; its response and events remain scoped to that page.
 - `GET /v1/pages/{pageId}/logs` returns bounded console and network diagnostics; live diagnostics are delivered on `/v1/events`.
 - Upload, download, request interception, screencast, and manual input are event/API extensions. They must preserve the same token, origin, page identity, and redaction rules.
 

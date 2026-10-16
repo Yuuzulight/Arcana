@@ -135,6 +135,22 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         if (context.Request.HttpMethod == "GET" && operation == "snapshot") { await JsonAsync(context.Response, 200, await page.SnapshotAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "cookies") { await JsonAsync(context.Response, 200, await page.GetCookiesAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "storage") { await JsonAsync(context.Response, 200, await page.ExportStorageAsync(cancellationToken)); return; }
+        if (context.Request.HttpMethod == "PUT" && operation is "cookies" or "storage")
+        {
+            using var stateDocument = await ReadDocumentAsync(context.Request, cancellationToken).ConfigureAwait(false);
+            if (stateDocument is null) throw new ArgumentException("request body is required.");
+            if (operation == "cookies")
+            {
+                if (stateDocument.RootElement.ValueKind != JsonValueKind.Array) throw new ArgumentException("cookies must be an array.");
+                await page.SetCookiesAsync(stateDocument.RootElement.EnumerateArray().Select(cookie => (object)cookie.Clone()).ToArray(), cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                var state = stateDocument.RootElement.Deserialize<PageStorageState>(JsonOptions) ?? throw new ArgumentException("storage state is invalid.");
+                await page.RestoreStorageAsync(state, cancellationToken).ConfigureAwait(false);
+            }
+            await JsonAsync(context.Response, 200, new { ok = true }); return;
+        }
         if (context.Request.HttpMethod == "GET" && operation == "screenshot")
         {
             var format = context.Request.QueryString["format"] is "jpeg" ? "jpeg" : "png";
@@ -153,7 +169,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
                 await page.RestoreStorageAsync(state, cancellationToken); break;
             case "find":
                 var query = body.Value ?? throw new ArgumentException("value is required.");
-                await JsonAsync(context.Response, 200, await page.QueryAsync("a,button,input,textarea,select,[role]", cancellationToken)); return;
+                await JsonAsync(context.Response, 200, await page.EvaluateAsync($"Array.from(document.querySelectorAll('a,button,input,textarea,select,[role]')).filter(el => (el.innerText || el.getAttribute('aria-label') || el.value || '').toLowerCase().includes({JsonSerializer.Serialize(query.ToLowerInvariant())})).map(el => ({{tag:el.tagName.toLowerCase(),text:(el.innerText||el.getAttribute('aria-label')||el.value||'').trim()}}))", cancellationToken)); return;
             case "cdp":
                 var cdp = root is { } cdpRoot ? cdpRoot.Deserialize<CdpRequest>(JsonOptions) : null;
                 if (cdp is null) throw new ArgumentException("CDP request is required.");
