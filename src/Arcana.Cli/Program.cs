@@ -102,12 +102,13 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
     var options = new ArcanaOptions
     {
         ExecutablePath = GetOption(args, "executable"),
+        ProfileDirectory = GetOption(args, "profile"),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
     await using var runtime = new BrowserRuntime(options);
     await runtime.StartAsync(cancellationToken);
     await using var browser = await ArcanaBrowser.ConnectAsync(runtime, cancellationToken);
-    await using var api = new ArcanaApiServer(browser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0);
+    await using var api = new ArcanaApiServer(browser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0, options.ProfileDirectory);
     api.Start();
     var ready = new { apiVersion = ArcanaApiServer.Version, endpoint = api.Endpoint, token };
     Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ready));
@@ -137,7 +138,7 @@ static void PrintHelp()
     Console.WriteLine("  engine --help     (complete engine CLI reference)");
     Console.WriteLine("  doctor");
     Console.WriteLine("  run [--executable=PATH] [--port=PORT] [--allow-private-network]");
-    Console.WriteLine("  api [--executable=PATH] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
+    Console.WriteLine("  api [--executable=PATH] [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
     Console.WriteLine("  snapshot URL [--executable=PATH] [--allow-private-network]");
     Console.WriteLine("  fallback https://example.com");
 }

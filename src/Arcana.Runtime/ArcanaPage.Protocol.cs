@@ -82,6 +82,15 @@ public sealed partial class ArcanaPage
         return Convert.FromBase64String(result.GetProperty("data").GetString()!);
     }
 
+    public async Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
+    {
+        if (format is not ("png" or "jpeg")) throw new ArgumentException("Screenshot format must be png or jpeg.", nameof(format));
+        var parameters = new Dictionary<string, object?> { ["format"] = format };
+        if (quality is not null) parameters["quality"] = quality;
+        var result = await SendCdpAsync("Page.captureScreenshot", parameters, cancellationToken).ConfigureAwait(false);
+        return Convert.FromBase64String(result.GetProperty("data").GetString()!);
+    }
+
     public async Task<byte[]> PrintPdfAsync(bool landscape = false, CancellationToken cancellationToken = default)
     {
         var result = await SendCdpAsync("Page.printToPDF", new { landscape, printBackground = true }, cancellationToken).ConfigureAwait(false);
