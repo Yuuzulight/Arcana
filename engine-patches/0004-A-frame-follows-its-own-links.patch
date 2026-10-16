@@ -1,0 +1,120 @@
+From 96cda21df32066ea43716e6ec6f6e361fd6a7276 Mon Sep 17 00:00:00 2001
+From: Yuuzulight <yuuzulight@gmail.com>
+Date: Sat, 17 Oct 2026 06:38:05 +0800
+Subject: [PATCH 4/4] A frame follows its own links
+
+A link clicked in a child frame, or the frame's location.href, was recorded
+against the frame and then never acted on: the frame's location changed and its
+document stayed. The page now has the frame's element load the address, as the
+first load was done. Also, the page's own address check read the frame's
+address while a command was aimed at a frame, which moved the top page's URL;
+it now reads the page's.
+---
+ crates/obscura-browser/src/fork_virtual_url.rs |  8 +++++++-
+ crates/obscura-browser/src/page.rs             | 17 +++++++++++++++++
+ crates/obscura-js/src/ops.rs                   | 16 ++++++++++++++++
+ crates/obscura-js/src/runtime.rs               | 10 ++++++++++
+ 4 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/crates/obscura-browser/src/fork_virtual_url.rs b/crates/obscura-browser/src/fork_virtual_url.rs
+index 77974f2..3b1e7db 100644
+--- a/crates/obscura-browser/src/fork_virtual_url.rs
++++ b/crates/obscura-browser/src/fork_virtual_url.rs
+@@ -24,7 +24,13 @@ impl Page {
+         let Some(js) = self.js.as_mut() else {
+             return false;
+         };
+-        let Ok(virtual_url) = js.evaluate("globalThis.__virtualUrl || ''") else {
++        // The page's own address, even while a command is aimed at a child frame: a frame's
++        // `__virtualUrl` is the frame's address, not the page's.
++        let aimed_at = js.active_frame();
++        js.set_active_frame(None);
++        let virtual_url = js.evaluate("globalThis.__virtualUrl || ''");
++        js.set_active_frame(aimed_at);
++        let Ok(virtual_url) = virtual_url else {
+             return false;
+         };
+         let Some(virtual_url) = virtual_url.as_str().filter(|url| !url.is_empty()) else {
+diff --git a/crates/obscura-browser/src/page.rs b/crates/obscura-browser/src/page.rs
+index ec3350d..1a479b9 100644
+--- a/crates/obscura-browser/src/page.rs
++++ b/crates/obscura-browser/src/page.rs
+@@ -1633,6 +1633,23 @@ impl Page {
+     /// frame runs scripts that can post, and a message usually causes a reply,
+     /// so neither queue is finished until both are quiet.
+     async fn advance_frames(&mut self) -> bool {
++        // A frame that navigates itself (a link in it, `location.href`) is followed by loading the address
++        // into its frame element, the way the first load was done.
++        let navigations = self.js.as_ref().map(|js| js.take_frame_navigations()).unwrap_or_default();
++        for (frame, url, method, _body) in navigations {
++            if !method.eq_ignore_ascii_case("GET") {
++                continue;
++            }
++            if let (Some(js), Ok(address)) = (self.js.as_mut(), serde_json::to_string(&url)) {
++                let _ = js.execute_script(
++                    "<frame-navigate>",
++                    &format!(
++                        "(function() {{ var el = globalThis.__obscura_frameElements[{frame}]; \
++                         if (el) el.setAttribute('src', {address}); }})()"
++                    ),
++                );
++            }
++        }
+         let mut queued_new = self.queue_pending_frames();
+         self.release_detached_frames();
+         if self.pending_frame_work.is_empty() && self.queue_pending_frames() {
+diff --git a/crates/obscura-js/src/ops.rs b/crates/obscura-js/src/ops.rs
+index 0152ad8..3f587b7 100644
+--- a/crates/obscura-js/src/ops.rs
++++ b/crates/obscura-js/src/ops.rs
+@@ -1124,6 +1124,22 @@ struct FrameTimers {
+ }
+ 
+ impl RealmStates {
++    /// The addresses child frames asked to go to (a link in the frame, `location.href`), taken so each is
++    /// followed once: (frame, url, method, body). The frame's own `pending_navigation` is where `op_navigate`
++    /// records it; nothing else reads it.
++    pub(crate) fn take_frame_navigations(&self) -> Vec<(u32, String, String, String)> {
++        self.entries
++            .iter()
++            .filter_map(|(_, id, state)| {
++                state
++                    .borrow_mut()
++                    .pending_navigation
++                    .take()
++                    .map(|(url, method, body)| (*id, url, method, body))
++            })
++            .collect()
++    }
++
+     pub(crate) fn media_realms(&self) -> Vec<(v8::Global<v8::Context>, SharedState)> {
+         self.entries.iter().map(|(context, _, state)| (context.clone(), state.clone())).collect()
+     }
+diff --git a/crates/obscura-js/src/runtime.rs b/crates/obscura-js/src/runtime.rs
+index f969789..14085ec 100644
+--- a/crates/obscura-js/src/runtime.rs
++++ b/crates/obscura-js/src/runtime.rs
+@@ -1148,6 +1148,11 @@ impl ObscuraJsRuntime {
+         std::mem::take(&mut state.pending_frames)
+     }
+ 
++    /// Navigations child frames asked for since the last call: (frame, url, method, body).
++    pub fn take_frame_navigations(&self) -> Vec<(u32, String, String, String)> {
++        self.realm_states().borrow().take_frame_navigations()
++    }
++
+     #[doc(hidden)]
+     pub fn has_pending_frame_tasks(&self) -> bool {
+         let state = self.state.borrow();
+@@ -1209,6 +1214,11 @@ impl ObscuraJsRuntime {
+         self.active_frame = frame_id;
+     }
+ 
++    /// The child frame page scripts are currently aimed at, if any.
++    pub fn active_frame(&self) -> Option<u32> {
++        self.active_frame
++    }
++
+     /// The child frame an object id was minted in, if it was not the page's.
+     pub fn frame_of_object_id(object_id: &str) -> Option<u32> {
+         let rest = object_id.split("\"injectedScriptId\":").nth(1)?;

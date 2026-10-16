@@ -34,6 +34,13 @@ The engine remembers which child frames it has announced to a client. A new docu
 so they counted as already announced, and the second page with frames in a session read as empty. A committed
 document now forgets what was announced.
 
+## 0004: a frame follows its own links
+
+A link clicked in a child frame, or the frame's `location.href`, was recorded against the frame and never acted on:
+the frame's location changed and its document stayed. The page now has the frame's element load the address, as
+the first load was done. The page's own address check also read the frame's address while a command was aimed at
+a frame, which moved the top page's URL; it now reads the page's.
+
 ## Moving the pin
 
 The weekly pin bump changes `sourceCommit`. If a patch no longer applies, the build fails at that patch: rebase
