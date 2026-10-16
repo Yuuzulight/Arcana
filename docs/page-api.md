@@ -31,7 +31,7 @@ The page API is the engine-neutral boundary for Mana. The current .NET API is th
 - `POST /v1/pages/{pageId}/upload` with `{ "ref": "e1", "path": "C:\\..." }` sets a file input selected by a live ref.
 - `GET /v1/pages/{pageId}/screenshot` returns PNG bytes.
 - `POST /v1/pages/{pageId}/evaluate` with `{ "expression": "..." }` evaluates a page expression and returns its JSON value.
-- `POST /v1/pages/{pageId}/wait` accepts `{ "condition": "selector|text|expression", "value": "...", "timeoutMs": 10000 }`.
+- `POST /v1/pages/{pageId}/wait` accepts `{ "condition": "selector|text|expression|networkidle", "value": "...", "timeoutMs": 10000 }`; `networkidle` waits for 500 ms without network activity.
 
 Stable refs are scoped to a page and document. A navigation, document replacement, or detached element invalidates old refs and returns `409` with code `stale_reference`; callers must request a new snapshot. Input values and password contents never appear in snapshots or event payloads.
 

@@ -50,6 +50,8 @@ public sealed class ApiServerTests
 
         using var wait = await client.PostAsJsonAsync($"v1/pages/{pageId}/wait", new { condition = "selector", value = "body", timeoutMs = 1000 }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, wait.StatusCode);
+        using var idle = await client.PostAsJsonAsync($"v1/pages/{pageId}/wait", new { condition = "networkidle", value = "", timeoutMs = 3000 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, idle.StatusCode);
         using var logs = await client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, logs.StatusCode);
 

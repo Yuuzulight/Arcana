@@ -188,6 +188,11 @@ public sealed class ArcanaApiServer : IAsyncDisposable
                 var condition = body.Condition ?? throw new ArgumentException("condition is required.");
                 var waitValue = body.Value ?? throw new ArgumentException("value is required.");
                 var timeoutMs = body.TimeoutMs is > 0 and <= 120000 ? body.TimeoutMs : 10000;
+                if (condition == "networkidle")
+                {
+                    await WaitForNetworkIdleAsync(page, timeoutMs.Value, cancellationToken);
+                    await JsonAsync(context.Response, 200, new { ok = true }); return;
+                }
                 var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs.Value);
                 var expression = condition switch
                 {
@@ -249,6 +254,33 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     {
         if (_logLifetimes.TryRemove(id, out var lifetime)) lifetime.Dispose();
         _logs.TryRemove(id, out _);
+    }
+
+    private static async Task WaitForNetworkIdleAsync(ArcanaPage page, int timeoutMs, CancellationToken cancellationToken)
+    {
+        await page.SendCdpAsync("Network.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var events = page.Subscribe(capacity: 512);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeoutMs);
+        var lastActivity = DateTime.UtcNow;
+        var read = events.ReadAsync(deadline.Token).AsTask();
+        try
+        {
+            while (true)
+            {
+                var delay = Task.Delay(50, deadline.Token);
+                var completed = await Task.WhenAny(read, delay).ConfigureAwait(false);
+                if (completed == read)
+                {
+                    var evt = await read.ConfigureAwait(false);
+                    if (evt.Method.StartsWith("Network.", StringComparison.Ordinal)) lastActivity = DateTime.UtcNow;
+                    read = events.ReadAsync(deadline.Token).AsTask();
+                }
+                if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromMilliseconds(500)) return;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { throw new TimeoutException($"Network did not become idle within {timeoutMs} ms."); }
     }
 
     private async Task EventsAsync(HttpListenerContext context, CancellationToken cancellationToken)

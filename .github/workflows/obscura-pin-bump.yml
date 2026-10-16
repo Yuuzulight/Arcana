@@ -1,0 +1,38 @@
+name: Obscura main pin bump
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pin:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve newest Obscura main
+        shell: pwsh
+        run: |
+          $sha = (git ls-remote https://github.com/h4ckf0r0day/obscura.git refs/heads/main).Split("`t")[0]
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "Could not resolve Obscura main." }
+          $lock = Get-Content engine.lock.json -Raw | ConvertFrom-Json
+          if ($lock.sourceCommit -eq $sha) { "Already current at $sha"; exit 0 }
+          $lock.sourceCommit = $sha
+          $lock.version = "main-$sha"
+          $lock | ConvertTo-Json | Set-Content engine.lock.json
+          "OBSCURA_SHA=$sha" | Out-File $env:GITHUB_ENV -Append
+      - name: Open pin bump pull request
+        if: env.OBSCURA_SHA != ''
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: bump Obscura main pin"
+          title: "chore: bump Obscura main pin to ${{ env.OBSCURA_SHA }}"
+          body: "Automated weekly pin bump. Contract and parity tests run in the pull request workflow."
+          branch: automation/obscura-pin-bump
+          delete-branch: true
