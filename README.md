@@ -66,6 +66,12 @@ await File.WriteAllBytesAsync("page.png", await page.CaptureScreenshotAsync(full
 await File.WriteAllBytesAsync("page.pdf", await page.PrintPdfAsync());
 ```
 
+The versioned loopback page transport is available from the CLI. It prints one JSON ready record containing the endpoint and bearer token:
+
+```powershell
+dotnet run --project src/Arcana.Cli -- api --port=0
+```
+
 Page methods also provide fill/type/select/check, batch forms, waits, history, cookies, storage export/restore, viewport, coordinate input, and scrolling. Browser methods list/attach/close tabs and manage isolated contexts. `SendCdpAsync` exposes additional native methods. Subscribe **before** an operation to retain its events:
 
 ```csharp

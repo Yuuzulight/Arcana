@@ -21,6 +21,7 @@ Baseline references:
 | Binary resources | `fetch --dump original` | Non-UTF-8 bytes, NULs, and line endings preserved exactly |
 | Parallel scraping | `scrape`, including worker process | Two fixture URLs with concurrent workers and evaluated titles |
 | CDP server / Puppeteer / Playwright endpoint | `serve`, or `BrowserRuntime` | HTTP version endpoint; .NET protocol integration against the engine; external Puppeteer/Playwright suites not run |
+| Versioned page API v1 | `api` CLI command and `ArcanaApiServer` | Authenticated loopback health, page creation, snapshot, navigation, deletion, and origin rejection tests |
 | All 37 MCP browser tools | `mcp` over stdio | Exact tool schema comparison; every advertised tool called successfully on a fixture |
 | HTTP MCP | `mcp --http` | Initialize via authenticated HTTP; missing bearer rejected |
 | Navigation, back, forward, reload | MCP and .NET page methods | Titles/history checked after navigation |
