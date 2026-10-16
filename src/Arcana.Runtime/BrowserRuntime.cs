@@ -36,6 +36,7 @@ public sealed class BrowserRuntime : IAsyncDisposable
             var profile = PrepareProfile();
             var startInfo = BuildStartInfo(executable, profile, Port);
             _process = Process.Start(startInfo) ?? throw new InvalidOperationException("The browser process could not be started.");
+            ProcessJob.Add(_process);
             // Drain both pipes so noisy pages cannot block the engine on a full pipe.
             _process.OutputDataReceived += (_, _) => { };
             _process.ErrorDataReceived += (_, _) => { };

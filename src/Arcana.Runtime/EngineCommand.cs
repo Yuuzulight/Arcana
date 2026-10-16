@@ -27,6 +27,7 @@ public static class EngineCommand
         try
         {
             process = Process.Start(start) ?? throw new IOException("Arcana engine could not start.");
+            ProcessJob.Add(process);
             var output = process.StandardOutput.BaseStream.CopyToAsync(Console.OpenStandardOutput(), cancellationToken);
             var errors = process.StandardError.BaseStream.CopyToAsync(Console.OpenStandardError(), cancellationToken);
             // Input can remain open after a finite command exits. Do not wait on the host's stdin in that case.
