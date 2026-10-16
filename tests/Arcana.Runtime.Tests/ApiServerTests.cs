@@ -48,6 +48,11 @@ public sealed class ApiServerTests
         Assert.AreEqual(HttpStatusCode.OK, snapshot.StatusCode);
         StringAssert.Contains(await snapshot.Content.ReadAsStringAsync(timeout.Token), "Arcana parity fixture");
 
+        using var wait = await client.PostAsJsonAsync($"v1/pages/{pageId}/wait", new { condition = "selector", value = "body", timeoutMs = 1000 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, wait.StatusCode);
+        using var logs = await client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, logs.StatusCode);
+
         using var action = await client.PostAsJsonAsync($"v1/pages/{pageId}/navigate", new { url = site.Origin + "/two" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, action.StatusCode);
         using var deleted = await client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);

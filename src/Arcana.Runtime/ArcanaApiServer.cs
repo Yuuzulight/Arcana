@@ -16,6 +16,8 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     private readonly string? _profileDirectory;
     private readonly HttpListener _listener = new();
     private readonly ConcurrentDictionary<string, ArcanaPage> _pages = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<object>> _logs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _logLifetimes = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _loop;
     private bool _disposed;
@@ -58,7 +60,10 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             catch (HttpListenerException) { }
         }
         foreach (var page in _pages.Values) await page.CloseAsync().ConfigureAwait(false);
+        foreach (var lifetime in _logLifetimes.Values) lifetime.Cancel();
+        foreach (var lifetime in _logLifetimes.Values) lifetime.Dispose();
         _pages.Clear();
+        _logs.Clear();
         _listener.Close();
         _lifetime.Dispose();
     }
@@ -112,6 +117,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         if (body?.Url is not null) await page.NavigateAndWaitAsync(body.Url, cancellationToken).ConfigureAwait(false);
         var id = Guid.NewGuid().ToString("N");
         _pages[id] = page;
+        StartLogCapture(id, page);
         await JsonAsync(context.Response, 201, new { pageId = id, url = body?.Url ?? "about:blank" });
     }
 
@@ -131,10 +137,11 @@ public sealed class ArcanaApiServer : IAsyncDisposable
 
     private async Task DispatchPageAsync(HttpListenerContext context, string id, ArcanaPage page, string operation, CancellationToken cancellationToken)
     {
-        if (context.Request.HttpMethod == "DELETE" && operation.Length == 0) { _pages.TryRemove(id, out _); await page.CloseAsync(cancellationToken); await JsonAsync(context.Response, 204, null); return; }
+        if (context.Request.HttpMethod == "DELETE" && operation.Length == 0) { _pages.TryRemove(id, out _); StopLogCapture(id); await page.CloseAsync(cancellationToken); await JsonAsync(context.Response, 204, null); return; }
         if (context.Request.HttpMethod == "GET" && operation == "snapshot") { await JsonAsync(context.Response, 200, await page.SnapshotAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "cookies") { await JsonAsync(context.Response, 200, await page.GetCookiesAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "storage") { await JsonAsync(context.Response, 200, await page.ExportStorageAsync(cancellationToken)); return; }
+        if (context.Request.HttpMethod == "GET" && operation == "logs") { await JsonAsync(context.Response, 200, _logs.TryGetValue(id, out var log) ? log.ToArray() : Array.Empty<object>()); return; }
         if (context.Request.HttpMethod == "PUT" && operation is "cookies" or "storage")
         {
             using var stateDocument = await ReadDocumentAsync(context.Request, cancellationToken).ConfigureAwait(false);
@@ -177,6 +184,24 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             case "evaluate":
                 var evaluated = await page.EvaluateAsync(body.Expression ?? throw new ArgumentException("expression is required."), cancellationToken);
                 await JsonAsync(context.Response, 200, evaluated); return;
+            case "wait":
+                var condition = body.Condition ?? throw new ArgumentException("condition is required.");
+                var waitValue = body.Value ?? throw new ArgumentException("value is required.");
+                var timeoutMs = body.TimeoutMs is > 0 and <= 120000 ? body.TimeoutMs : 10000;
+                var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs.Value);
+                var expression = condition switch
+                {
+                    "selector" => $"document.querySelector({JsonSerializer.Serialize(waitValue)}) !== null",
+                    "text" => $"(document.body?.innerText || '').includes({JsonSerializer.Serialize(waitValue)})",
+                    "expression" => $"Boolean({waitValue})",
+                    _ => throw new ArgumentException("condition must be selector, text, or expression.")
+                };
+                while (DateTime.UtcNow < deadline)
+                {
+                    if ((await page.EvaluateAsync(expression, cancellationToken)).ValueKind == JsonValueKind.True) { await JsonAsync(context.Response, 200, new { ok = true }); return; }
+                    await Task.Delay(50, cancellationToken);
+                }
+                throw new TimeoutException($"Wait condition timed out after {timeoutMs} ms.");
             case "viewport": await page.SetViewportAsync(body.Width, body.Height, cancellationToken); break;
             case "click-at": await page.ClickAtAsync(body.X, body.Y, cancellationToken); break;
             case "key": await page.PressKeyAsync(body.Key ?? throw new ArgumentException("key is required."), cancellationToken); break;
@@ -195,6 +220,35 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             default: await ErrorAsync(context.Response, 404, "not_found", "The page operation was not found."); return;
         }
         await JsonAsync(context.Response, 200, new { ok = true });
+    }
+
+    private void StartLogCapture(string id, ArcanaPage page)
+    {
+        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _logs[id] = new ConcurrentQueue<object>();
+        _logLifetimes[id] = lifetime;
+        _ = Task.Run(async () =>
+        {
+            using var events = page.Subscribe(capacity: 256);
+            try
+            {
+                await foreach (var evt in events.ReadAllAsync(lifetime.Token))
+                {
+                    if (!evt.Method.StartsWith("Runtime.console", StringComparison.Ordinal) && !evt.Method.StartsWith("Runtime.exception", StringComparison.Ordinal) && !evt.Method.StartsWith("Network.", StringComparison.Ordinal)) continue;
+                    var queue = _logs.GetOrAdd(id, _ => new ConcurrentQueue<object>());
+                    queue.Enqueue(new { name = evt.Method, data = evt.Parameters });
+                    while (queue.Count > 256 && queue.TryDequeue(out _)) { }
+                }
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+            finally { events.Dispose(); }
+        }, lifetime.Token);
+    }
+
+    private void StopLogCapture(string id)
+    {
+        if (_logLifetimes.TryRemove(id, out var lifetime)) lifetime.Dispose();
+        _logs.TryRemove(id, out _);
     }
 
     private async Task EventsAsync(HttpListenerContext context, CancellationToken cancellationToken)
@@ -271,7 +325,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     }
 
     private sealed record CreateRequest(string? Url);
-    private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Key = null, string? Expression = null, string? Path = null,
-        int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0);
+    private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Condition = null, string? Key = null, string? Expression = null, string? Path = null,
+        int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0, int? TimeoutMs = null);
     private sealed record CdpRequest(string? Method, JsonElement Parameters);
 }
