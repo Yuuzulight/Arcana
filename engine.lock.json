@@ -1,7 +1,7 @@
 {
   "repository": "h4ckf0r0day/obscura",
-  "version": "main-bd9529418b7fa975b50eabeac415cfaaa865a588+arcana1",
-  "sourceCommit": "bd9529418b7fa975b50eabeac415cfaaa865a588",
+  "version": "main-8b3dd479a4b7e91a9fa8f3d3deb0fb6793a04861",
+  "sourceCommit": "8b3dd479a4b7e91a9fa8f3d3deb0fb6793a04861",
   "patches": [
     {
       "name": "0001-Child-frames-work-for-CDP-clients-contexts-evaluatio.patch",
