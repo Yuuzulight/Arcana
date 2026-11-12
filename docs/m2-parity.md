@@ -25,4 +25,4 @@ Run `tools/measure-parity.ps1` with the locally built CLI to record startup, hea
 
 The scheduled workflow [obscura-pin-bump.yml](../.github/workflows/obscura-pin-bump.yml) resolves the newest Obscura `main`, updates `engine.lock.json`, and opens a pin-bump pull request whose checks run the contract suite.
 
-The one-week unexplained-fallback exit criterion remains an operational follow-up: collect seven days of Mana runs after this integration branch is merged, with no unexplained Edge fallback.
+The 72-hour unexplained-fallback exit criterion remains an operational follow-up: collect three days of unattended Mana runs after this integration branch is merged, with no unexplained Edge fallback.

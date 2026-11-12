@@ -25,7 +25,7 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 - Schedule newest-main builds, contract tests, and pin-bump pull requests.
 - Add clear failure reasons and network-idle waits for single-page apps.
 
-Exit condition: a working/different/failing table exists with an issue for every failure, followed by a week without unexplained Edge fallback.
+Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback.
 
 ## M3: Live view, approvals, annotate
 
