@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Arcana.Runtime;
 
-public sealed partial class ArcanaBrowser : IAsyncDisposable
+public sealed partial class ArcanaBrowser : IAsyncDisposable, IArcanaBrowserBackend
 {
     private readonly CdpConnection _connection;
     private bool _disposed;
@@ -25,6 +25,9 @@ public sealed partial class ArcanaBrowser : IAsyncDisposable
 
     public async Task<ArcanaPage> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
         => await NewPageInContextAsync(null, url, cancellationToken).ConfigureAwait(false);
+
+    async Task<IArcanaPageBackend> IArcanaBrowserBackend.NewPageAsync(string? url, CancellationToken cancellationToken)
+        => await NewPageAsync(url, cancellationToken).ConfigureAwait(false);
 
     public async Task<ArcanaPage> NewPageInContextAsync(string? browserContextId, string? url = null, CancellationToken cancellationToken = default)
     {

@@ -4,6 +4,9 @@ namespace Arcana.Runtime;
 
 public sealed partial class ArcanaBrowser
 {
+    public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default) =>
+        SendCdpAsync("Browser.getVersion", cancellationToken: cancellationToken);
+
     /// <summary>Full native CDP access, including domains without a convenience wrapper.</summary>
     public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) =>
         _connection.SendAsync(method, parameters, cancellationToken: cancellationToken);

@@ -11,18 +11,18 @@ namespace Arcana.Runtime;
 public sealed class ArcanaApiServer : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly ArcanaBrowser _browser;
+    private readonly IArcanaBrowserBackend _browser;
     private readonly string _token;
     private readonly string? _profileDirectory;
     private readonly HttpListener _listener = new();
-    private readonly ConcurrentDictionary<string, ArcanaPage> _pages = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, IArcanaPageBackend> _pages = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<object>> _logs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _logLifetimes = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _loop;
     private bool _disposed;
 
-    public ArcanaApiServer(ArcanaBrowser browser, string token, int port = 0, string? profileDirectory = null)
+    public ArcanaApiServer(IArcanaBrowserBackend browser, string token, int port = 0, string? profileDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(browser);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
@@ -34,6 +34,9 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         Endpoint = new Uri($"http://127.0.0.1:{Port}/");
         _listener.Prefixes.Add(Endpoint.ToString());
     }
+
+    public ArcanaApiServer(ArcanaBrowser browser, string token, int port = 0, string? profileDirectory = null)
+        : this((IArcanaBrowserBackend)browser, token, port, profileDirectory) { }
 
     public const string Version = ArcanaOptions.ApiVersion;
     public Uri Endpoint { get; }
@@ -90,7 +93,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             if (context.Request.IsWebSocketRequest && path == "/v1/events") { await EventsAsync(context, cancellationToken); return; }
             if (context.Request.HttpMethod == "GET" && path == "/v1/health")
             {
-                await JsonAsync(context.Response, 200, new { apiVersion = Version, engine = await _browser.SendCdpAsync("Browser.getVersion", cancellationToken: cancellationToken) });
+                await JsonAsync(context.Response, 200, new { apiVersion = Version, engine = await _browser.GetVersionAsync(cancellationToken) });
                 return;
             }
             if (context.Request.HttpMethod == "GET" && path == "/v1/tabs") { await JsonAsync(context.Response, 200, await _browser.GetTabsAsync(cancellationToken)); return; }
@@ -121,7 +124,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         await JsonAsync(context.Response, 201, new { pageId = id, url = body?.Url ?? "about:blank" });
     }
 
-    private async Task RestoreCookiesAsync(ArcanaPage page, CancellationToken cancellationToken)
+    private async Task RestoreCookiesAsync(IArcanaPageBackend page, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_profileDirectory)) return;
         var stateFile = Path.Combine(_profileDirectory, "credentials.json");
@@ -135,7 +138,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         catch (JsonException) { }
     }
 
-    private async Task DispatchPageAsync(HttpListenerContext context, string id, ArcanaPage page, string operation, CancellationToken cancellationToken)
+    private async Task DispatchPageAsync(HttpListenerContext context, string id, IArcanaPageBackend page, string operation, CancellationToken cancellationToken)
     {
         if (context.Request.HttpMethod == "DELETE" && operation.Length == 0) { _pages.TryRemove(id, out _); StopLogCapture(id); await page.CloseAsync(cancellationToken); await JsonAsync(context.Response, 204, null); return; }
         if (context.Request.HttpMethod == "GET" && operation == "snapshot") { await JsonAsync(context.Response, 200, await page.SnapshotAsync(cancellationToken)); return; }
@@ -190,7 +193,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
                 var timeoutMs = body.TimeoutMs is > 0 and <= 120000 ? body.TimeoutMs : 10000;
                 if (condition == "networkidle")
                 {
-                    await WaitForNetworkIdleAsync(page, timeoutMs.Value, cancellationToken);
+                    await page.WaitForNetworkIdleAsync(timeoutMs.Value, cancellationToken);
                     await JsonAsync(context.Response, 200, new { ok = true }); return;
                 }
                 var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs.Value);
@@ -227,7 +230,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         await JsonAsync(context.Response, 200, new { ok = true });
     }
 
-    private void StartLogCapture(string id, ArcanaPage page)
+    private void StartLogCapture(string id, IArcanaPageBackend page)
     {
         var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _logs[id] = new ConcurrentQueue<object>();
@@ -254,33 +257,6 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     {
         if (_logLifetimes.TryRemove(id, out var lifetime)) lifetime.Dispose();
         _logs.TryRemove(id, out _);
-    }
-
-    private static async Task WaitForNetworkIdleAsync(ArcanaPage page, int timeoutMs, CancellationToken cancellationToken)
-    {
-        await page.SendCdpAsync("Network.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
-        using var events = page.Subscribe(capacity: 512);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeoutMs);
-        var lastActivity = DateTime.UtcNow;
-        var read = events.ReadAsync(deadline.Token).AsTask();
-        try
-        {
-            while (true)
-            {
-                var delay = Task.Delay(50, deadline.Token);
-                var completed = await Task.WhenAny(read, delay).ConfigureAwait(false);
-                if (completed == read)
-                {
-                    var evt = await read.ConfigureAwait(false);
-                    if (evt.Method.StartsWith("Network.", StringComparison.Ordinal)) lastActivity = DateTime.UtcNow;
-                    read = events.ReadAsync(deadline.Token).AsTask();
-                }
-                if ((DateTime.UtcNow - lastActivity) >= TimeSpan.FromMilliseconds(500)) return;
-            }
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        { throw new TimeoutException($"Network did not become idle within {timeoutMs} ms."); }
     }
 
     private async Task EventsAsync(HttpListenerContext context, CancellationToken cancellationToken)
