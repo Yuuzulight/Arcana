@@ -67,58 +67,106 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
 {
     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     timeout.CancelAfter(TimeSpan.FromSeconds(30));
-    await using var runtime = new BrowserRuntime(new ArcanaOptions
+    var backend = GetOption(args, "backend") ?? "obscura";
+    var options = new ArcanaOptions
     {
+        Backend = backend,
         ExecutablePath = GetOption(args, "executable"),
+        FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
-    });
-    await runtime.StartAsync(timeout.Token);
-    await using var browser = await ArcanaBrowser.ConnectAsync(runtime, timeout.Token);
-    var page = await browser.NewPageAsync(url, timeout.Token);
-    var snapshot = await page.SnapshotAsync(timeout.Token);
-    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(snapshot,
-        new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    };
+
+    if (options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+    {
+        await using var folioBrowser = new FolioBrowserBackend(options);
+        var page = await folioBrowser.NewPageAsync(url, timeout.Token);
+        var snapshot = await page.SnapshotAsync(timeout.Token);
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(snapshot,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
+    else
+    {
+        await using var runtime = new BrowserRuntime(options);
+        await runtime.StartAsync(timeout.Token);
+        await using var browser = await ArcanaBrowser.ConnectAsync(runtime, timeout.Token);
+        var page = await browser.NewPageAsync(url, timeout.Token);
+        var snapshot = await page.SnapshotAsync(timeout.Token);
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(snapshot,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
 }
 
 static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 {
+    var backend = GetOption(args, "backend") ?? "obscura";
     var options = new ArcanaOptions
     {
+        Backend = backend,
         ExecutablePath = GetOption(args, "executable"),
+        FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
         Port = int.TryParse(GetOption(args, "port"), out var port) ? port : 0,
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
 
-    await using var runtime = new BrowserRuntime(options);
-    await runtime.StartAsync(cancellationToken);
-    Console.WriteLine($"Arcana engine running on {runtime.Endpoint} (PID {runtime.ProcessId}).");
-    Console.WriteLine("Press Ctrl+C or Enter to stop and clean up the process tree.");
-    await Console.In.ReadLineAsync(cancellationToken);
+    if (options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+    {
+        await using var folioBrowser = new FolioBrowserBackend(options);
+        Console.WriteLine($"Arcana Folio engine initialized (sandboxed).");
+        Console.WriteLine("Press Ctrl+C or Enter to stop.");
+        await Console.In.ReadLineAsync(cancellationToken);
+    }
+    else
+    {
+        await using var runtime = new BrowserRuntime(options);
+        await runtime.StartAsync(cancellationToken);
+        Console.WriteLine($"Arcana engine running on {runtime.Endpoint} (PID {runtime.ProcessId}).");
+        Console.WriteLine("Press Ctrl+C or Enter to stop and clean up the process tree.");
+        await Console.In.ReadLineAsync(cancellationToken);
+    }
 }
 
 static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
 {
     var token = GetOption(args, "token") ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+    var backend = GetOption(args, "backend") ?? "obscura";
     var options = new ArcanaOptions
     {
+        Backend = backend,
         ExecutablePath = GetOption(args, "executable"),
+        FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
+        FolioBrokerPath = GetOption(args, "folio-broker"),
         ProfileDirectory = GetOption(args, "profile"),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
-    await using var runtime = new BrowserRuntime(options);
-    await runtime.StartAsync(cancellationToken);
-    await using var browser = await ArcanaBrowser.ConnectAsync(runtime, cancellationToken);
-    await using var api = new ArcanaApiServer(browser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0, options.ProfileDirectory);
-    api.Start();
-    var ready = new { apiVersion = ArcanaApiServer.Version, endpoint = api.Endpoint, token };
-    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ready));
-    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+    if (options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+    {
+        await using var folioBrowser = new FolioBrowserBackend(options);
+        await using var api = new ArcanaApiServer(folioBrowser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0, options.ProfileDirectory);
+        api.Start();
+        var ready = new { apiVersion = ArcanaApiServer.Version, endpoint = api.Endpoint, token, backend = "folio" };
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ready));
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+    else
+    {
+        await using var runtime = new BrowserRuntime(options);
+        await runtime.StartAsync(cancellationToken);
+        await using var browser = await ArcanaBrowser.ConnectAsync(runtime, cancellationToken);
+        await using var api = new ArcanaApiServer(browser, token, int.TryParse(GetOption(args, "port"), out var port) ? port : 0, options.ProfileDirectory);
+        api.Start();
+        var ready = new { apiVersion = ArcanaApiServer.Version, endpoint = api.Endpoint, token, backend = "obscura" };
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ready));
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
 }
 
 static void PrintDoctor()
 {
     Console.WriteLine($"Arcana engine: {EngineLocator.Resolve()}");
     Console.WriteLine($"Parity baseline: Obscura {EngineLocator.Version}");
+    var folio = EngineLocator.ResolveFolio();
+    Console.WriteLine($"Folio engine: {(folio is not null ? folio : "Available (managed headless runtime)")}");
     Console.WriteLine("Default-browser fallback: Windows default handler, opened only by explicit caller request");
     Console.WriteLine("Default policy: loopback only, one worker, and private-network access disabled.");
 }
@@ -137,8 +185,8 @@ static void PrintHelp()
     Console.WriteLine("  engine [all native engine arguments, including global flags]");
     Console.WriteLine("  engine --help     (complete engine CLI reference)");
     Console.WriteLine("  doctor");
-    Console.WriteLine("  run [--executable=PATH] [--port=PORT] [--allow-private-network]");
-    Console.WriteLine("  api [--executable=PATH] [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
-    Console.WriteLine("  snapshot URL [--executable=PATH] [--allow-private-network]");
+    Console.WriteLine("  run [--backend=obscura|folio] [--executable=PATH] [--port=PORT] [--allow-private-network]");
+    Console.WriteLine("  api [--backend=obscura|folio] [--executable=PATH] [--folio-executable=PATH] [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
+    Console.WriteLine("  snapshot URL [--backend=obscura|folio] [--executable=PATH] [--allow-private-network]");
     Console.WriteLine("  fallback https://example.com");
 }

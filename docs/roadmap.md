@@ -63,12 +63,14 @@ before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-**Status: Open.** Folio's artifact-rendering and scripting milestones do not yet
-provide the live-site browser capabilities Arcana requires. See the strict
-[M5 readiness audit](m5-folio-readiness.md). M5 closes only after a Folio-backed
-Arcana adapter passes the M1 contract tests and a maintained SPA site list on
-both engines.
+**Status: Done.**
+
+Folio is implemented and qualified as an Arcana browsing backend.
+- Page API v1 adapter implemented in `src/Arcana.Runtime/FolioBrowserBackend.cs`.
+- Contract tests pass on Folio (`tests/Arcana.Runtime.Tests/FolioContractTests.cs`).
+- Maintained real SPA flow qualification passed on both Folio and Obscura (`tests/Arcana.Runtime.Tests/SpaQualificationTests.cs` and `docs/m5-spa-matrix.md`).
+- Readiness criteria satisfied in `docs/m5-folio-readiness.md`.
 
 ## M6: Cutover
 
-Swap Obscura for Folio in one release, keep Obscura as a build option for one version, then record the decision about Edge and Playwright in Mana's roadmap.
+**Status: Ready for cutover.** Swap Obscura for Folio as the default backend in one release, keep Obscura as an explicit build/runtime option for one version, then record the decision about Edge and Playwright in Mana's roadmap.

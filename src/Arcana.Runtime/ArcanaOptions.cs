@@ -13,11 +13,17 @@ public sealed record ArcanaOptions
     public string? Proxy { get; init; }
     public string? UserAgent { get; init; }
     public bool Stealth { get; init; }
+    public string Backend { get; init; } = "obscura";
+    public string? FolioExecutablePath { get; init; }
+    public string? FolioBrokerPath { get; init; }
 
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Host) || Host is not ("127.0.0.1" or "localhost"))
             throw new ArgumentException("Arcana must bind to loopback unless a future explicit host policy is added.", nameof(Host));
+        if (!string.Equals(Backend, "obscura", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Backend, "folio", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Backend must be 'obscura' or 'folio'.", nameof(Backend));
         if (Port is < 0 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(Port));
         if (WorkerCount < 1)

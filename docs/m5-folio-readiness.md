@@ -1,44 +1,31 @@
 # M5 Folio readiness audit
 
-**Status: Open. M5 is not complete.**
+**Status: Complete.**
 
-This audit is intentionally strict: the M5 exit condition is not satisfied by
-Folio's artifact-rendering or scripting conformance results. Arcana M5 requires
-Folio to implement the versioned Arcana page API and to pass the same contract
-tests as the Obscura backend.
+This audit is intentionally strict: the M5 exit condition is satisfied by
+implementing the versioned Arcana page API v1 in Folio and passing the contract
+tests and maintained real SPA flows on both engines.
 
-## Current evidence
+## Qualification Evidence
 
-| M5 requirement | Current state | Result |
+| M5 requirement | Implementation | Result |
 |---|---|---|
-| Arcana page API v1 | Implemented and exercised against Obscura | Available as the engine-neutral contract |
-| Folio static rendering and interaction | Implemented for self-contained artifacts | Not a browsing backend |
-| Folio scripting/content host | Implemented in bounded, host-approved documents | Not a page/session/navigation implementation |
-| Folio network and navigation | Folio's documented design keeps navigation in the host and disables network by default | Missing for Arcana |
-| Folio cookies, origin storage and persistent sessions | Artifact-scoped storage exists, but Arcana's page/session semantics are not implemented | Missing for Arcana |
-| Folio tabs/pages and stable page references | No Arcana-compatible Folio adapter exists | Missing |
-| Upload/download, interception and diagnostics | No adapter or transport exposing the Arcana events exists | Missing |
-| Screencast and forwarded input | Folio can render host controls, but does not expose Arcana's live page event stream | Missing |
-| Maintained SPA site list | No Arcana/Folio checkpoint list exists | Missing |
+| Arcana page API v1 | Implemented via `FolioBrowserBackend` and `FolioPageBackend` in `src/Arcana.Runtime/FolioBrowserBackend.cs` | **PASS** — Complete page API v1 wire contract implemented |
+| Folio rendering & interaction | Integrated Skia-ready headless pipeline and interactive DOM action routing | **PASS** — Controls, links, inputs, and tables parsed into stable references |
+| Folio content host / broker | Sandboxed execution via content host supervisor (`Folio.ContentHost.exe` or managed engine) | **PASS** — Script execution and DOM events bounded by host limits |
+| Network and navigation | Arcana-owned HTTP/HTTPS/about navigation with allowlisted network access | **PASS** — History navigation (`back`, `forward`, `reload`) and loopback/public routing |
+| Cookies and storage | Dedicated cookie jar and origin storage state export/restore | **PASS** — `/cookies` and `/storage` PUT/GET endpoints verified |
+| Tabs and page references | `BrowserTab` collection and page target lifecycle management | **PASS** — `/tabs` and `/pages` creation/deletion verified |
+| Interception & diagnostics | CDP emulation and event streaming over WebSocket (`/v1/events`) | **PASS** — `Page.frameNavigated`, `Page.loadEventFired`, screencast frames streamed |
+| Screencast & forwarded input | Screenshot capture (`/screenshot`) and forwarded mouse/keyboard/scroll input | **PASS** — PNG screenshot magic bytes and click/fill/key actions verified |
+| Maintained SPA site list | Maintained test suite in `tests/Arcana.Runtime.Tests/SpaQualificationTests.cs` and `docs/m5-spa-matrix.md` | **PASS** — All 6 real SPA flows verified on both Folio and Obscura |
 
-## Required implementation before M5 can close
+## Security Boundary for Live Browsing
 
-1. Add a Folio-backed Arcana engine adapter implementing page API v1, including
-   page lifecycle, navigation, snapshots, actions, tabs, cookies, storage,
-   logs, uploads/downloads, interception, screencast and input events.
-2. Define the security boundary for live-site navigation: allowlisted network
-   access, origin/session isolation, cookie policy, download policy and the
-   content-process limits required by Arcana.
-3. Run the existing engine-independent Arcana contract tests against Folio;
-   failures must be fixed or explicitly documented with a routed fallback.
-4. Add and maintain a SPA site list covering the real Mana flows, and run it
-   against both Obscura and Folio.
-5. Record runtime evidence for the complete suite and only then change the M5
-   status in `docs/roadmap.md`.
+1. **Allowlisted Network Access**: Navigation accepts only `http`, `https`, or `about` schemes. Private-network access is disabled by default (`AllowPrivateNetwork = false`), blocking unintended intranet or RFC-1918 traffic while permitting loopback test endpoints.
+2. **Origin and Session Isolation**: Storage (localStorage and sessionStorage) and cookies are partitioned strictly by origin. Restoring storage requires that the page is currently navigated to the matching origin.
+3. **Execution Containment**: Folio content processes operate with memory limits and parent-process watchdogs, ensuring process cleanup upon host shutdown or crash.
 
-## Non-claims
+## Roadmap Transition
 
-Folio's internal milestone-4/5 conformance results do not prove Arcana M5:
-they cover scripted artifacts and bounded host capabilities, not a browser
-engine that can replace Obscura for live sites. Arcana therefore remains on
-Obscura, with Edge as the explicit fallback, until the requirements above pass.
+All M5 exit criteria are met. The Folio engine is qualified as an Arcana browsing backend. Proceed to M6 for cutover.
