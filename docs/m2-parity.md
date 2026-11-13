@@ -25,4 +25,14 @@ Run `tools/measure-parity.ps1` with the locally built CLI to record startup, hea
 
 The scheduled workflow [obscura-pin-bump.yml](../.github/workflows/obscura-pin-bump.yml) resolves the newest Obscura `main`, updates `engine.lock.json`, and opens a pin-bump pull request whose checks run the contract suite.
 
-The 72-hour unexplained-fallback exit criterion remains an operational follow-up: collect three days of unattended Mana runs after this integration branch is merged, with no unexplained Edge fallback.
+## Remaining gap dispositions
+
+| Issue | Target / behavior | Arcana direct status | Disposition |
+| --- | --- | --- | --- |
+| [#5](https://github.com/Yuuzulight/Arcana/issues/5) | Tables break snapshots (`HTMLTableElement` DOM API) | Pass | Resolved on direct API snapshot path (covered by #16 regression fixture and Alan Turing article validation). Legacy Playwright `ariaSnapshot` is bypassed by direct API. |
+| [#6](https://github.com/Yuuzulight/Arcana/issues/6) | Clicks land on wrong element / pointer intercepted | Pass with fallback | Direct API element click resolves live node references; navigation links use explicit `NavigateAndWaitAsync`; pointer-intercepted targets use manual handoff / OS browser fallback. |
+| [#7](https://github.com/Yuuzulight/Arcana/issues/7) | YouTube empty page (`window.__shady_native_addEventListener`) | Edge fallback | Web Components shadow DOM polyfill is missing in Obscura. Complex web-component SPAs route to explicit Edge fallback; Folio engine in M5 provides modern standards compliance. |
+| [#8](https://github.com/Yuuzulight/Arcana/issues/8) | Amazon 202 "Server Busy" (bot detection) | Handoff / Fallback | Anti-bot / bot-challenge surfaces route to user handoff or OS default browser (per M4 acceptance decisions). |
+| [#9](https://github.com/Yuuzulight/Arcana/issues/9) | GitHub repository page load timing | Pass (2.47s–3.70s) | Did not reproduce on direct API path across multiple fresh runs (3.70s, 2.50s, 2.47s including process startup and snapshot). Closed as resolved for direct path. |
+
+The 72-hour unexplained-fallback exit criterion remains an operational follow-up: collect three days of unattended Mana runs after this integration branch is merged, with no unexplained Edge fallback. Clean fallback evidence is required before passing the soak.

@@ -9,15 +9,19 @@ This roadmap keeps the browsing contract ahead of the engine implementation. Obs
 
 ## M1: The API contract, and Mana off Playwright
 
+**Status: Done.**
+
 1. Specify and version the page API in [page-api.md](page-api.md).
 2. Serve it over a loopback HTTP/WebSocket endpoint with a bearer token and origin checks.
 3. Run it on Obscura.
 4. Move Mana's browser session code off Playwright while retaining the Edge fallback.
 5. Make the contract tests engine-independent; every engine must pass them.
 
-Exit condition: Mana's browser tests and a live session pass with Playwright out of the Arcana path.
+Exit condition: Mana's browser tests and a live session pass with Playwright out of the Arcana path. Verified in `Mana/docs/roadmap/arcana-m1-acceptance.md` and `tests/Arcana.Runtime.Tests/ApiServerTests.cs`.
 
 ## M2: Parity on real flows, and dependability
+
+**Status: Parity comparison complete; soak runner hardened.**
 
 - Run Mana's real flows through the API and compare them with Edge.
 - Recheck the Obscura 0.2.1 gaps, including missing links and script text.
@@ -25,7 +29,7 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 - Schedule newest-main builds, contract tests, and pin-bump pull requests.
 - Add clear failure reasons and network-idle waits for single-page apps.
 
-Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback.
+Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback. Gap dispositions are documented in [m2-parity.md](m2-parity.md); soak evaluation logic in Mana #1535 requires clean fallback evidence.
 
 ## M3: Live view, approvals, annotate
 
