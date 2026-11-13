@@ -73,4 +73,11 @@ Folio is implemented and qualified as an Arcana browsing backend.
 
 ## M6: Cutover
 
-**Status: Ready for cutover.** Swap Obscura for Folio as the default backend in one release, keep Obscura as an explicit build/runtime option for one version, then record the decision about Edge and Playwright in Mana's roadmap.
+**Status: Done.**
+
+Folio is the default browser engine for Arcana.
+- Default backend switched to `folio` in `ArcanaOptions` and Arcana CLI.
+- Obscura is retained as an explicit build and runtime option (`--backend=obscura`) for one release version.
+- Mana operates on the new default Folio backend, retaining Windows default browser (Edge) as an explicit fallback for user-interactive handoffs.
+- Playwright is fully retired from the Arcana runtime path.
+- Code-signing remains deliberately deferred as planned.

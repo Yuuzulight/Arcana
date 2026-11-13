@@ -13,7 +13,7 @@ public sealed record ArcanaOptions
     public string? Proxy { get; init; }
     public string? UserAgent { get; init; }
     public bool Stealth { get; init; }
-    public string Backend { get; init; } = "obscura";
+    public string Backend { get; init; } = "folio";
     public string? FolioExecutablePath { get; init; }
     public string? FolioBrokerPath { get; init; }
 
