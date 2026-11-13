@@ -25,8 +25,8 @@ public sealed class PageInteractionTests
             """, ct);
 
         var snapshot = await page.SnapshotAsync(ct);
-        StringAssert.Contains(await page.GetTextAsync(ct), "Results");
-        StringAssert.Contains(await page.GetTextAsync(ct), "Alan Turing");
+        StringAssert.Contains(snapshot.Text, "Results");
+        StringAssert.Contains(snapshot.Text, "Alan Turing");
         await page.ClickAsync(snapshot.Elements.Single(element => element.Name == "Details").Reference, ct);
         Assert.AreEqual("Details clicked", await page.EvaluateStringAsync("document.title", ct));
     }
