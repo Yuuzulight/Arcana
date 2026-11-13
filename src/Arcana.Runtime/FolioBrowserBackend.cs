@@ -39,7 +39,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend, IAsyncDisposabl
             userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Folio/0.1.0 Chrome/120.0.0.0 Safari/537.36",
             jsVersion = "Folio.Scripting Native",
             engine = "folio",
-            sandboxed = true,
+            sandboxed = false,
             contentHost = _folioExecutable is not null ? Path.GetFileName(_folioExecutable) : "managed"
         });
         return Task.FromResult(version);

@@ -67,7 +67,9 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
 {
     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     timeout.CancelAfter(TimeSpan.FromSeconds(30));
-    var backend = GetOption(args, "backend") ?? "folio";
+    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+        throw new NotSupportedException("The Folio content host is not integrated yet. Use --backend=obscura.");
     var options = new ArcanaOptions
     {
         Backend = backend,
@@ -98,7 +100,9 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
 
 static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 {
-    var backend = GetOption(args, "backend") ?? "folio";
+    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+        throw new NotSupportedException("The Folio content host is not integrated yet. Use --backend=obscura.");
     var options = new ArcanaOptions
     {
         Backend = backend,
@@ -128,7 +132,9 @@ static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
 {
     var token = GetOption(args, "token") ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-    var backend = GetOption(args, "backend") ?? "folio";
+    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+        throw new NotSupportedException("The Folio content host is not integrated yet. Use --backend=obscura.");
     var options = new ArcanaOptions
     {
         Backend = backend,
@@ -163,8 +169,7 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
 
 static void PrintDoctor()
 {
-    var folio = EngineLocator.ResolveFolio();
-    Console.WriteLine($"Arcana default engine: Folio ({(folio is not null ? folio : "Available, managed headless runtime")})");
+    Console.WriteLine($"Arcana default engine: {ArcanaOptions.DefaultBackend}");
     Console.WriteLine($"Build option engine: Obscura {EngineLocator.Version} ({EngineLocator.Resolve()})");
     Console.WriteLine("Default-browser fallback: Windows default handler, opened only by explicit caller request");
     Console.WriteLine("Default policy: loopback only, one worker, and private-network access disabled.");
