@@ -27,7 +27,9 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 
 Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback.
 
-## M3: Live view, approvals, annotate — Done
+## M3: Live view, approvals, annotate
+
+**Status: In review.** The Mana implementation is tracked in [Mana #1530](https://github.com/Yuuzulight/Mana/pull/1530).
 
 - Drive the Browser panel from screencast events.
 - Show approved actions as they happen.
@@ -37,7 +39,9 @@ Exit condition: the panel receives live page frames, approved actions are visibl
 and an annotated element is pinned into the next agent result. Verified by the
 Mana activity/route tests and the real Arcana M4 control test.
 
-## M4: Take over inside Arcana — Done
+## M4: Take over inside Arcana
+
+**Status: In review.** The Mana implementation is tracked in [Mana #1532](https://github.com/Yuuzulight/Mana/pull/1532).
 
 - Forward mouse, keyboard, and scroll input through the API.
 - Spike a bank-style login, a CAPTCHA, and a SaaS login; offer real-browser handoff where Arcana is rejected.
