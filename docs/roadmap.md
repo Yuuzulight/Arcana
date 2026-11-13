@@ -55,7 +55,11 @@ before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-Folio implements the M1 contract after its JavaScript, iframe, worker, media, and service-worker milestones. The contract tests and a maintained SPA site list are the checkpoint.
+**Status: Open.** Folio's artifact-rendering and scripting milestones do not yet
+provide the live-site browser capabilities Arcana requires. See the strict
+[M5 readiness audit](m5-folio-readiness.md). M5 closes only after a Folio-backed
+Arcana adapter passes the M1 contract tests and a maintained SPA site list on
+both engines.
 
 ## M6: Cutover
 
