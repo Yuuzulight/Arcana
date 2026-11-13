@@ -57,9 +57,45 @@ internal sealed class TestSite : IAsyncDisposable
                 var bodyText = path switch
                 {
                     "/api" => "{\"message\":\"network works\"}",
+                    "/spa-api" => "{\"items\":[\"Item Alpha\",\"Item Beta\",\"Item Gamma\"],\"total\":3}",
                     "/robots.txt" => "User-agent: *\nAllow: /\n",
                     "/two" => "<html><head><title>Second page</title></head><body><h1>Second page</h1></body></html>",
                     "/submit" => "<html><head><title>Submitted</title></head><body>Submitted</body></html>",
+                    "/table" => """
+                        <!doctype html><html><head><title>Structured Table Reference</title></head><body>
+                        <h1>Article with Structured Data</h1>
+                        <table class="infobox"><tr><th>Key</th><td>Value</td></tr></table>
+                        <table class="wikitable">
+                        <thead><tr><th>Header 1</th><th>Header 2</th><th>Header 3</th></tr></thead>
+                        <tbody>
+                        <tr><td>Row 1 Col 1</td><td>Row 1 Col 2</td><td>Row 1 Col 3</td></tr>
+                        <tr><td>Row 2 Col 1</td><td>Row 2 Col 2</td><td>Row 2 Col 3</td></tr>
+                        </tbody>
+                        </table>
+                        </body></html>
+                        """,
+                    "/spa" => """
+                        <!doctype html><html><head><title>Single Page Application</title></head><body>
+                        <h1>SPA Interactive Matrix</h1>
+                        <nav><a id="tab-home" href="#home">Home</a> | <a id="tab-data" href="#data">Data</a> | <a id="tab-settings" href="#settings">Settings</a></nav>
+                        <div id="content">Welcome to SPA</div>
+                        <table id="spa-table"><thead><tr><th>Metric</th><th>Score</th></tr></thead><tbody><tr><td>Speed</td><td>99</td></tr><tr><td>Reliability</td><td>100</td></tr></tbody></table>
+                        <form id="spa-form" action="/submit" method="post">
+                          <input id="spa-input" name="item" value="initial-value">
+                          <select id="spa-select" name="category"><option value="cat1">Category 1</option><option value="cat2">Category 2</option></select>
+                          <button id="spa-btn" type="submit">Submit Item</button>
+                        </form>
+                        <iframe id="spa-frame" src="/two" title="Nested Frame"></iframe>
+                        <div id="dynamic-container">Initial items</div>
+                        <script>
+                          window.addEventListener('hashchange', () => {
+                            document.getElementById('content').textContent = 'Viewing: ' + location.hash;
+                          });
+                          sessionStorage.setItem('spa_session', 'active');
+                          localStorage.setItem('spa_local', 'persisted');
+                        </script>
+                        </body></html>
+                        """,
                     _ => """
                         <!doctype html><html><head><title>Arcana fixture</title></head><body>
                         <h1>Arcana parity fixture</h1><p>Readable test content</p>
