@@ -15,7 +15,7 @@ The page API is the engine-neutral boundary for Mana. The current .NET API is th
 ## Page lifecycle
 
 - `GET /v1/tabs` lists live page targets with stable `targetId`, URL, and title fields.
-- `POST /v1/pages` with `{ "url": "https://..." }` creates a page and returns `{ "pageId": "...", "url": "..." }`.
+- `POST /v1/pages` with `{ "url": "https://..." }` creates a page and returns `{ "pageId": "...", "url": "..." }`. For self-contained fixtures, `{ "html": "..." }` creates an `about:blank` page with the supplied inline document; HTML is limited to 1 MiB and cannot be combined with a non-blank URL. The inline document has no network resource broker or cookie origin.
 - `DELETE /v1/pages/{pageId}` closes the page.
 - `POST /v1/pages/{pageId}/navigate` with `{ "url": "https://..." }` navigates and waits for `readyState=complete`.
 - `POST /v1/pages/{pageId}/back`, `/forward`, and `/reload` perform history or reload operations.

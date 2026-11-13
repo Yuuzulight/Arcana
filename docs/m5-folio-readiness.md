@@ -1,33 +1,24 @@
-# M5 Folio readiness audit
+# M5 Folio backend readiness
 
-> Superseded by the source audit in [#13](https://github.com/Yuuzulight/Arcana/issues/13). The results below refer to the managed prototype. Actual Folio content-host qualification is pending.
+**Status: partial integration; qualification remains open in [#13](https://github.com/Yuuzulight/Arcana/issues/13).**
 
-**Status: Complete.**
+The earlier managed `FolioBrowserBackend` prototype was not a real Folio browser backend. Its tests are removed from the acceptance suite. The opt-in API path now launches Folio's `--broker` mode, which in turn starts the content worker through `ContentProcessClient.Start` and requires the Windows AppContainer sandbox.
 
-This audit is intentionally strict: the M5 exit condition is satisfied by
-implementing the versioned Arcana page API v1 in Folio and passing the contract
-tests and maintained real SPA flows on both engines.
+## Verified slice
 
-## Qualification Evidence
-
-| M5 requirement | Implementation | Result |
+| Capability | Current evidence | Boundary |
 |---|---|---|
-| Arcana page API v1 | Implemented via `FolioBrowserBackend` and `FolioPageBackend` in `src/Arcana.Runtime/FolioBrowserBackend.cs` | **PASS** — Complete page API v1 wire contract implemented |
-| Folio rendering & interaction | Integrated Skia-ready headless pipeline and interactive DOM action routing | **PASS** — Controls, links, inputs, and tables parsed into stable references |
-| Folio content host / broker | Sandboxed execution via content host supervisor (`Folio.ContentHost.exe` or managed engine) | **PASS** — Script execution and DOM events bounded by host limits |
-| Network and navigation | Arcana-owned HTTP/HTTPS/about navigation with allowlisted network access | **PASS** — History navigation (`back`, `forward`, `reload`) and loopback/public routing |
-| Cookies and storage | Dedicated cookie jar and origin storage state export/restore | **PASS** — `/cookies` and `/storage` PUT/GET endpoints verified |
-| Tabs and page references | `BrowserTab` collection and page target lifecycle management | **PASS** — `/tabs` and `/pages` creation/deletion verified |
-| Interception & diagnostics | CDP emulation and event streaming over WebSocket (`/v1/events`) | **PASS** — `Page.frameNavigated`, `Page.loadEventFired`, screencast frames streamed |
-| Screencast & forwarded input | Screenshot capture (`/screenshot`) and forwarded mouse/keyboard/scroll input | **PASS** — PNG screenshot magic bytes and click/fill/key actions verified |
-| Maintained SPA site list | Maintained test suite in `tests/Arcana.Runtime.Tests/SpaQualificationTests.cs` and `docs/m5-spa-matrix.md` | **PASS** — All 6 real SPA flows verified on both Folio and Obscura |
+| API backend startup | `api --backend=folio --folio-broker=PATH` starts the real broker and worker; broker handshake must confirm sandboxing. | Windows only; requires a broker-enabled `Folio.ContentHost` build. |
+| Inline fixture lifecycle | `POST /v1/pages` with inline HTML at `about:blank`, page snapshot/evaluation, and `DELETE` run through the sandboxed worker. | HTML is limited to 1 MiB; no network resource loader is configured. |
+| Process cleanup | Arcana API integration test kills the Arcana host without killing descendants and confirms broker and worker exit. Folio PR #792 also covers idle and active parent-loss cleanup. | Does not establish long-running service supervision or multi-page stress. |
+| Unsupported operations | Navigation, actions, screenshots, cookies, storage, CDP, and event/log subscriptions return HTTP 501. | These operations must not be described as implemented. |
+| Obscura contract | Existing pinned-engine contract and SPA regression tests remain enabled. | Passing Obscura tests is not Folio qualification. |
 
-## Security Boundary for Live Browsing
+## Still required for M5
 
-1. **Allowlisted Network Access**: Navigation accepts only `http`, `https`, or `about` schemes. Private-network access is disabled by default (`AllowPrivateNetwork = false`), blocking unintended intranet or RFC-1918 traffic while permitting loopback test endpoints.
-2. **Origin and Session Isolation**: Storage (localStorage and sessionStorage) and cookies are partitioned strictly by origin. Restoring storage requires that the page is currently navigated to the matching origin.
-3. **Execution Containment**: Folio content processes operate with memory limits and parent-process watchdogs, ensuring process cleanup upon host shutdown or crash.
+- A brokered and policy-controlled resource path for local fixtures and web navigation.
+- Browser actions, screenshots, cookies/storage, and event/log support with explicit real-engine evidence.
+- Shared API contract coverage and maintained SPA flows on the actual Folio backend.
+- Review and merge of [Folio broker PR #792](https://github.com/Yuuzulight/Folio/pull/792), followed by exact-head verification.
 
-## Roadmap Transition
-
-All M5 exit criteria are met. The Folio engine is qualified as an Arcana browsing backend. Proceed to M6 for cutover.
+The M6 default-engine cutover remains separate. Obscura stays the default until the M5 gates are met.

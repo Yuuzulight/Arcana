@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Arcana.Runtime;
 
 /// <summary>Browser operations required by the versioned API transport.</summary>
-public interface IArcanaBrowserBackend
+public interface IArcanaBrowserBackend : IAsyncDisposable
 {
     Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<BrowserTab>> GetTabsAsync(CancellationToken cancellationToken = default);
@@ -20,6 +20,7 @@ public interface IArcanaEventSubscription : IDisposable
 public interface IArcanaPageBackend
 {
     Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default);
+    Task SetContentAsync(string html, CancellationToken cancellationToken = default);
     Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default);
