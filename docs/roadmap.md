@@ -33,7 +33,7 @@ Exit condition: a working/different/failing table exists with an issue for every
 
 ## M3: Live view, approvals, annotate
 
-**Status: In review.** The Mana implementation is tracked in [Mana #1530](https://github.com/Yuuzulight/Mana/pull/1530).
+**Status: Done.** Merged in [Mana #1530](https://github.com/Yuuzulight/Mana/pull/1530) and [Mana #1534](https://github.com/Yuuzulight/Mana/pull/1534).
 
 - Drive the Browser panel from screencast events.
 - Show approved actions as they happen.
@@ -45,7 +45,7 @@ Mana activity/route tests and the real Arcana M4 control test.
 
 ## M4: Take over inside Arcana
 
-**Status: In review.** The Mana implementation is tracked in [Mana #1532](https://github.com/Yuuzulight/Mana/pull/1532).
+**Status: Done.** Merged in [Mana #1532](https://github.com/Yuuzulight/Mana/pull/1532).
 
 - Forward mouse, keyboard, and scroll input through the API.
 - Spike a bank-style login, a CAPTCHA, and a SaaS login; offer real-browser handoff where Arcana is rejected.
