@@ -1,5 +1,7 @@
 # M5 Maintained SPA Flow & Capability Qualification Matrix
 
+> Historical fixture results. The Folio-labeled tests ran the managed prototype against loopback fixtures. Live-site and sandbox capability qualification remain open in [#13](https://github.com/Yuuzulight/Arcana/issues/13).
+
 This document records the maintained real SPA flows and browser capability qualifications required by Arcana Issue #13 and roadmap milestone M5.
 
 Both **Folio** and **Obscura** are qualified against the shared Arcana Page API v1 contract and maintained real SPA flows.

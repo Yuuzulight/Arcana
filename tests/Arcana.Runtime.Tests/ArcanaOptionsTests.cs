@@ -23,7 +23,7 @@ public sealed class ArcanaOptionsTests
         Assert.AreEqual(1, options.WorkerCount);
         Assert.AreEqual(16, options.MaxConnections);
         Assert.IsFalse(options.AllowPrivateNetwork);
-        Assert.AreEqual("folio", options.Backend);
+        Assert.AreEqual("obscura", options.Backend);
     }
 
     [TestMethod]

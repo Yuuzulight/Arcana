@@ -1,5 +1,7 @@
 # M5 Folio readiness audit
 
+> Superseded by the source audit in [#13](https://github.com/Yuuzulight/Arcana/issues/13). The results below refer to the managed prototype. Actual Folio content-host qualification is pending.
+
 **Status: Complete.**
 
 This audit is intentionally strict: the M5 exit condition is satisfied by
