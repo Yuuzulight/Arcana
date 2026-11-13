@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Arcana.Runtime;
 
-public sealed partial class ArcanaPage
+public sealed partial class ArcanaPage : IArcanaPageBackend
 {
     private readonly CdpConnection _connection;
     private readonly string _targetId;

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 
 namespace Arcana.Runtime;
 
@@ -8,6 +9,8 @@ public sealed partial class ArcanaPage
         _connection.SendAsync(method, parameters, _sessionId, cancellationToken);
 
     public CdpSubscription Subscribe(string? method = null, int capacity = 256) => _connection.Subscribe(method, _sessionId, capacity);
+
+    IArcanaEventSubscription IArcanaPageBackend.Subscribe(string? method, int capacity) => Subscribe(method, capacity);
 
     public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) =>
         _connection.SendAsync("Target.closeTarget", new { targetId = _targetId }, cancellationToken: cancellationToken);
@@ -60,6 +63,35 @@ public sealed partial class ArcanaPage
     {
         await NavigateAsync(url, cancellationToken).ConfigureAwait(false);
         await WaitForAsync("document.readyState === 'complete'", cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default)
+    {
+        if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
+        await SendCdpAsync("Network.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var events = Subscribe(capacity: 512);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeoutMs);
+        var lastActivity = Stopwatch.GetTimestamp();
+        var read = events.ReadAsync(deadline.Token).AsTask();
+        try
+        {
+            while (true)
+            {
+                var delay = Task.Delay(50, deadline.Token);
+                var completed = await Task.WhenAny(read, delay).ConfigureAwait(false);
+                deadline.Token.ThrowIfCancellationRequested();
+                if (completed == read)
+                {
+                    var evt = await read.ConfigureAwait(false);
+                    if (evt.Method.StartsWith("Network.", StringComparison.Ordinal)) lastActivity = Stopwatch.GetTimestamp();
+                    read = events.ReadAsync(deadline.Token).AsTask();
+                }
+                if (Stopwatch.GetElapsedTime(lastActivity) >= TimeSpan.FromMilliseconds(500)) return;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { throw new TimeoutException($"Network did not become idle within {timeoutMs} ms."); }
     }
 
     public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default)

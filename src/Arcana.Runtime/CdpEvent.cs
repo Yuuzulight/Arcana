@@ -11,7 +11,7 @@ public sealed class CdpException(JsonElement error) : InvalidOperationException(
 }
 
 /// <summary>A filtered stream. Subscribe before sending the command that produces an event.</summary>
-public sealed class CdpSubscription : IDisposable
+public sealed class CdpSubscription : IArcanaEventSubscription
 {
     private readonly Channel<CdpEvent> _events;
     private readonly string? _method;
