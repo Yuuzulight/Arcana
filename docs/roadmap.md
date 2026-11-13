@@ -27,16 +27,31 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 
 Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback.
 
-## M3: Live view, approvals, annotate
+## M3: Live view, approvals, annotate — Done
 
 - Drive the Browser panel from screencast events.
 - Show approved actions as they happen.
 - Add click-to-annotate with redaction and a fallback crop box for empty inline layout rectangles.
 
-## M4: Take over inside Arcana
+Exit condition: the panel receives live page frames, approved actions are visible,
+and an annotated element is pinned into the next agent result. Verified by the
+Mana activity/route tests and the real Arcana M4 control test.
+
+## M4: Take over inside Arcana — Done
 
 - Forward mouse, keyboard, and scroll input through the API.
 - Spike a bank-style login, a CAPTCHA, and a SaaS login; offer real-browser handoff where Arcana is rejected.
+
+Exit condition: ordinary-page manual help works, page state survives hand-back,
+and all three sign-in classes have an explicit handoff decision. Verified in
+`Mana/docs/roadmap/arcana-m4-acceptance.md`. Credential entry, CAPTCHA solving,
+and credential persistence remain intentionally outside the agent path.
+
+## Release signing — Postponed
+
+Code-signing certificates and signed release artifacts are deliberately deferred.
+This does not block M3/M4 functionality or the Obscura-backed soak; revisit it
+before distributing a signed release installer.
 
 ## M5: The Folio engine
 
