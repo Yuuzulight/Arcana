@@ -7,6 +7,31 @@ namespace Arcana.Runtime.Tests;
 public sealed class PageInteractionTests
 {
     [TestMethod]
+    public async Task SnapshotReadsTablesAndKeepsCellLinksActionable()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = timeout.Token;
+        await using var runtime = new BrowserRuntime(new ArcanaOptions { ExecutablePath = ProtocolParityTests.Engine() });
+        await runtime.StartAsync(ct);
+        await using var browser = await ArcanaBrowser.ConnectAsync(runtime, ct);
+        var page = await browser.NewPageAsync(cancellationToken: ct);
+        await page.EvaluateStringAsync("""
+            document.body.innerHTML = '<table><caption>Results</caption><thead><tr><th scope="col">Name</th></tr></thead>'
+              + '<tbody><tr><td>Alan Turing</td><td><a href="#details">Details</a></td></tr></tbody></table>';
+            document.querySelector('a').addEventListener('click', event => {
+              event.preventDefault();
+              document.title = 'Details clicked';
+            });
+            """, ct);
+
+        var snapshot = await page.SnapshotAsync(ct);
+        StringAssert.Contains(snapshot.Text, "Results");
+        StringAssert.Contains(snapshot.Text, "Alan Turing");
+        await page.ClickAsync(snapshot.Elements.Single(element => element.Name == "Details").Reference, ct);
+        Assert.AreEqual("Details clicked", await page.EvaluateStringAsync("document.title", ct));
+    }
+
+    [TestMethod]
     public async Task SnapshotAndActionsUseLiveDocumentReferences()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_ENGINE");
