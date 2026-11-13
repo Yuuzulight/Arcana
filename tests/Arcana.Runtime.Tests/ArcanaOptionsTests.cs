@@ -23,6 +23,22 @@ public sealed class ArcanaOptionsTests
         Assert.AreEqual(1, options.WorkerCount);
         Assert.AreEqual(16, options.MaxConnections);
         Assert.IsFalse(options.AllowPrivateNetwork);
+        Assert.AreEqual("folio", options.Backend);
+    }
+
+    [TestMethod]
+    public void BackendOptionAllowsFolioAndObscura()
+    {
+        var folioOptions = new ArcanaOptions { Backend = "folio" };
+        folioOptions.Validate();
+        Assert.AreEqual("folio", folioOptions.Backend);
+
+        var obscuraOptions = new ArcanaOptions { Backend = "obscura" };
+        obscuraOptions.Validate();
+        Assert.AreEqual("obscura", obscuraOptions.Backend);
+
+        var invalidOptions = new ArcanaOptions { Backend = "unknown" };
+        Assert.ThrowsException<ArgumentException>(invalidOptions.Validate);
     }
 
     [TestMethod]
