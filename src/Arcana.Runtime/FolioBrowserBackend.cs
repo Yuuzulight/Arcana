@@ -317,32 +317,73 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
         public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
         {
+            var bounds = await RunReferenceActionAsync(reference, """
+                const rect = element.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
+                """, cancellationToken).ConfigureAwait(false);
+            if (bounds.GetArrayLength() != 2)
+                throw new InvalidOperationException("The referenced element has no clickable bounds.");
+            await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task FillAsync(string reference, string value, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            await RunReferenceActionAsync(reference, $$"""
+                if (element.readOnly || element.hasAttribute('readonly')) throw new Error('Element is read-only.');
+                const value = {{JsonSerializer.Serialize(value)}};
+                if (element.tagName === 'TEXTAREA' || (element.tagName === 'INPUT' &&
+                    ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(element.type))) {
+                    element.focus();
+                    element.value = value;
+                } else if (element.getAttribute('contenteditable') === 'true') {
+                    element.focus();
+                    element.textContent = value;
+                } else {
+                    throw new Error('Element is not a supported text control.');
+                }
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+                """, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            await RunReferenceActionAsync(reference, $$"""
+                if (element.tagName !== 'SELECT') throw new Error('Element is not a select.');
+                const value = {{JsonSerializer.Serialize(value)}};
+                const option = Array.from(element.options).find(o => o.value === value || o.textContent.trim() === value);
+                if (!option || option.disabled || option.parentElement?.disabled) throw new Error('Option unavailable.');
+                element.value = option.value;
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+                """, cancellationToken).ConfigureAwait(false);
+        }
+
+        private Task<JsonElement> RunReferenceActionAsync(string reference, string action, CancellationToken cancellationToken)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-            var bounds = await EvaluateAsync($$"""
+            return EvaluateAsync($$"""
                 (() => {
                     const reference = {{JsonSerializer.Serialize(reference)}};
                     const element = Array.from(document.querySelectorAll('[data-folio-ref]'))
                         .find(candidate => candidate.getAttribute('data-folio-ref') === reference);
-                    if (!element) return null;
-                    if (element.disabled || element.getAttribute('aria-disabled') === 'true') return [];
+                    if (!element) throw new Error('Stale element reference; capture a new snapshot.');
+                    if (element.disabled || element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
+                        throw new Error('Element is disabled.');
                     for (let node = element; node; node = node.parentElement) {
                         const style = getComputedStyle(node);
                         if (node.hasAttribute('hidden') || node.hasAttribute('inert') ||
                             node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
-                            style.visibility === 'hidden' || style.visibility === 'collapse') return [];
+                            style.visibility === 'hidden' || style.visibility === 'collapse') throw new Error('Element is hidden.');
                     }
-                    const rect = element.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
+                    {{action}}
                 })()
-                """, cancellationToken).ConfigureAwait(false);
-            if (bounds.ValueKind == JsonValueKind.Null)
-                throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
-            if (bounds.GetArrayLength() != 2)
-                throw new InvalidOperationException("The referenced element is hidden, disabled, or has no clickable bounds.");
-            await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+                """, cancellationToken);
         }
-        public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("fill");
-        public Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("select");
 
         private static Task Unsupported(string feature) => Task.FromException(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));
         private static Task<T> Unsupported<T>(string feature) => Task.FromException<T>(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));

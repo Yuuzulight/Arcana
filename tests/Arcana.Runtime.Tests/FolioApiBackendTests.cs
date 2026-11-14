@@ -273,7 +273,10 @@ public sealed class FolioApiBackendTests
                 <body style="margin:0">
                 <div id="scroller" style="height:200px;overflow:auto"><div style="height:2000px">
                 <input id="field" style="width:200px;height:40px">
+                <select id="choice"><option value="a">First</option><option value="b">Second</option></select>
                 <script>
+                window.changes = [];
+                document.body.addEventListener("change", e => window.changes.push(e.target.value));
                 window.presses = ""; window.wheelDelta = 0;
                 document.getElementById("scroller").addEventListener("wheel", e => window.wheelDelta = e.deltaY);
                 document.getElementById("field").addEventListener("keydown", e => window.presses = e.key);
@@ -290,6 +293,13 @@ public sealed class FolioApiBackendTests
         await Act("click", new { @ref = reference });
         await Act("type", new { value = "Folio" });
         await Act("press", new { key = "End" });
+        using var typed = await client.PostAsJsonAsync($"{page}/evaluate",
+            new { expression = "document.getElementById('field').value" }, timeout.Token);
+        typed.EnsureSuccessStatusCode();
+        Assert.AreEqual("Folio", await typed.Content.ReadFromJsonAsync<string>(cancellationToken: timeout.Token));
+        var choice = controls.RootElement.GetProperty("elements")[1].GetProperty("reference").GetString();
+        await Act("fill", new { @ref = reference, value = "Filled" });
+        await Act("select", new { @ref = choice, value = "Second" });
         var beforeScroll = await Screenshot();
         await Act("scroll", new { deltaX = 0, deltaY = 300 });
         var afterScroll = await Screenshot();
@@ -297,14 +307,17 @@ public sealed class FolioApiBackendTests
 
         using var state = await client.PostAsJsonAsync($"{page}/evaluate", new
         {
-            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta, document.getElementById('scroller').scrollTop]"
+            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta, document.getElementById('scroller').scrollTop, document.getElementById('choice').value, window.changes]"
         }, timeout.Token);
         Assert.IsTrue(state.IsSuccessStatusCode, await state.Content.ReadAsStringAsync(timeout.Token));
         using var result = JsonDocument.Parse(await state.Content.ReadAsStringAsync(timeout.Token));
-        Assert.AreEqual("Folio", result.RootElement[0].GetString());
+        Assert.AreEqual("Filled", result.RootElement[0].GetString());
         Assert.AreEqual("End", result.RootElement[1].GetString());
         Assert.AreEqual(300d, result.RootElement[2].GetDouble());
         Assert.AreEqual(300d, result.RootElement[3].GetDouble());
+        Assert.AreEqual("b", result.RootElement[4].GetString());
+        Assert.AreEqual("Filled", result.RootElement[5][0].GetString());
+        Assert.AreEqual("b", result.RootElement[5][1].GetString());
 
         async Task<byte[]> Screenshot()
         {
