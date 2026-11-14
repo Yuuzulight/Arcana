@@ -78,6 +78,58 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioApiForwardsPointerKeyboardTextAndWheelToDocument()
+    {
+        var broker = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(broker)) Assert.Inconclusive("An input-enabled Folio broker is required.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(broker!);
+        await using var api = new ArcanaApiServer(browser, "folio-input-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-input-token");
+
+        using var created = await client.PostAsJsonAsync("v1/pages", new
+        {
+            html = """
+                <body style="margin:0">
+                <div id="scroller" style="height:200px;overflow:auto"><div style="height:2000px">
+                <input id="field" style="width:200px;height:40px">
+                <script>
+                window.presses = ""; window.wheelDelta = 0;
+                document.getElementById("scroller").addEventListener("wheel", e => window.wheelDelta = e.deltaY);
+                document.getElementById("field").addEventListener("keydown", e => window.presses = e.key);
+                </script>
+                </div></div></body>
+                """
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, await created.Content.ReadAsStringAsync(timeout.Token));
+        using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
+        var page = $"v1/pages/{document.RootElement.GetProperty("pageId").GetString()}";
+
+        await Act("click-at", new { x = 20, y = 15 });
+        await Act("type", new { value = "Folio" });
+        await Act("press", new { key = "End" });
+        await Act("scroll", new { deltaX = 0, deltaY = 300 });
+
+        using var state = await client.PostAsJsonAsync($"{page}/evaluate", new
+        {
+            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta]"
+        }, timeout.Token);
+        Assert.IsTrue(state.IsSuccessStatusCode, await state.Content.ReadAsStringAsync(timeout.Token));
+        using var result = JsonDocument.Parse(await state.Content.ReadAsStringAsync(timeout.Token));
+        Assert.AreEqual("Folio", result.RootElement[0].GetString());
+        Assert.AreEqual("End", result.RootElement[1].GetString());
+        Assert.AreEqual(300d, result.RootElement[2].GetDouble());
+
+        async Task Act(string operation, object body)
+        {
+            using var response = await client.PostAsJsonAsync($"{page}/{operation}", body, timeout.Token);
+            Assert.IsTrue(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(timeout.Token));
+        }
+    }
+
+    [TestMethod]
     public async Task ArcanaHostExitReleasesBrokerAndSandboxWorker()
     {
         if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer process cleanup is verified on Windows.");
