@@ -286,10 +286,34 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         }
 
         public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");
-        public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported("click-at");
-        public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported("keyboard input");
-        public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("typing");
-        public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("scrolling");
+        public async Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default)
+        {
+            if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
+            await SendInputAsync("click-at", new { x, y }, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task PressKeyAsync(string key, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(key);
+            await SendInputAsync("press", new { key }, cancellationToken).ConfigureAwait(false);
+        }
+
+        public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default) =>
+            SendInputAsync("type", new { text }, cancellationToken);
+
+        public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default)
+        {
+            if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
+            return SendInputAsync("scroll", new { deltaX = x, deltaY = y }, cancellationToken);
+        }
+
+        private async Task<JsonElement> SendInputAsync(string operation, object payload, CancellationToken cancellationToken)
+        {
+            using var response = await _broker.RequestAsync(operation, payload, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            return JsonSerializer.SerializeToElement(new { });
+        }
+
         public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
         public Task ClickAsync(string reference, CancellationToken cancellationToken = default) => Unsupported("click");
         public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("fill");
@@ -318,7 +342,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     private sealed class BrokerConnection : IAsyncDisposable
     {
         private const int MaxResponseChars = 2 * 1024 * 1024;
-        // The 1280 × 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
+        // The 1280 Ã— 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
         private const int MaxScreenshotResponseChars = 8 * 1024 * 1024;
         private readonly Process _process;
         private readonly SemaphoreSlim _gate = new(1, 1);
