@@ -107,7 +107,11 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         private const string BlankHtml = "<!doctype html><html><head><title></title></head><body></body></html>";
         private readonly BrokerConnection _broker;
         private readonly bool _navigationEnabled;
-        private string? _inlineHtml;
+        private readonly SemaphoreSlim _navigationGate = new(1, 1);
+        private readonly List<NavigationEntry> _history = [];
+        private int _historyIndex = -1;
+
+        private sealed record NavigationEntry(string Url, string? Html = null);
         private bool _closed;
 
         private FolioPageBackend(BrokerConnection broker, bool navigationEnabled)
@@ -141,14 +145,13 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task SetContentAsync(string html, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(html);
-            return LoadAsync(html, cancellationToken);
+            return CommitNavigationAsync(new NavigationEntry("about:blank", html), replace: true, cancellationToken);
         }
 
         private async Task LoadAsync(string html, CancellationToken cancellationToken)
         {
             using var response = await _broker.RequestAsync("load", new { html, urlLabel = "about:blank" }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
-            _inlineHtml = html;
             Url = "about:blank";
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -188,12 +191,36 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             return parsed.RootElement.TryGetProperty("value", out var result) ? result.Clone() : JsonSerializer.SerializeToElement<object?>(null);
         }
 
-        public async Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default)
+        public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(url);
+            return CommitNavigationAsync(new NavigationEntry(url), replace: false, cancellationToken);
+        }
+
+        private async Task CommitNavigationAsync(NavigationEntry entry, bool replace, CancellationToken cancellationToken)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await LoadEntryAsync(entry, cancellationToken).ConfigureAwait(false);
+                if (replace && _historyIndex >= 0)
+                    _history[_historyIndex] = entry;
+                else
+                {
+                    _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1);
+                    _history.Add(entry);
+                    _historyIndex = _history.Count - 1;
+                }
+            }
+            finally { _navigationGate.Release(); }
+        }
+
+        private async Task LoadEntryAsync(NavigationEntry entry, CancellationToken cancellationToken)
+        {
+            var url = entry.Url;
             if (url == "about:blank")
             {
-                await LoadAsync(BlankHtml, cancellationToken).ConfigureAwait(false);
+                await LoadAsync(entry.Html ?? BlankHtml, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -201,7 +228,6 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
             using var response = await _broker.RequestAsync("navigate", new { url }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
-            _inlineHtml = null;
             Url = response.RootElement.GetProperty("url").GetString() ?? url;
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -232,14 +258,33 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
         public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
         {
-            if (_inlineHtml is { } html)
-                await LoadAsync(html, cancellationToken).ConfigureAwait(false);
-            else
-                await NavigateAndWaitAsync(Url, cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.SerializeToElement(new { });
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var entry = _history[_historyIndex];
+                await LoadEntryAsync(entry.Html is null ? new NavigationEntry(Url) : entry, cancellationToken).ConfigureAwait(false);
+                return JsonSerializer.SerializeToElement(new { });
+            }
+            finally { _navigationGate.Release(); }
         }
-        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
-        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
+
+        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => MoveHistoryAsync(-1, cancellationToken);
+        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => MoveHistoryAsync(1, cancellationToken);
+
+        private async Task<bool> MoveHistoryAsync(int delta, CancellationToken cancellationToken)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var index = _historyIndex + delta;
+                if (index < 0 || index >= _history.Count) return false;
+                await LoadEntryAsync(_history[index], cancellationToken).ConfigureAwait(false);
+                _historyIndex = index;
+                return true;
+            }
+            finally { _navigationGate.Release(); }
+        }
+
         public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");
         public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported("click-at");
         public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported("keyboard input");

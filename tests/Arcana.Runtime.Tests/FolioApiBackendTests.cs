@@ -131,6 +131,20 @@ public sealed class FolioApiBackendTests
         using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
         Assert.AreEqual(expectedUrl, tabs.RootElement[0].GetProperty("url").GetString());
         Assert.IsFalse(string.IsNullOrWhiteSpace(root.GetProperty("text").GetString()));
+
+        var pagePath = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
+        using var blank = await client.PostAsJsonAsync($"{pagePath}/navigate", new { url = "about:blank" }, timeout.Token);
+        blank.EnsureSuccessStatusCode();
+        await AssertHistory("back", expectedUrl);
+        await AssertHistory("forward", "about:blank");
+
+        async Task AssertHistory(string action, string expected)
+        {
+            using var move = await client.PostAsJsonAsync($"{pagePath}/{action}", new { }, timeout.Token);
+            Assert.IsTrue(move.IsSuccessStatusCode, await move.Content.ReadAsStringAsync(timeout.Token));
+            using var current = JsonDocument.Parse(await client.GetStringAsync($"{pagePath}/snapshot", timeout.Token));
+            Assert.AreEqual(expected, current.RootElement.GetProperty("url").GetString());
+        }
     }
 
     [TestMethod]
