@@ -65,6 +65,12 @@ public sealed partial class ArcanaPage
         await WaitForAsync("document.readyState === 'complete'", cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task SetContentAsync(string html, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(html);
+        await EvaluateAsync($"document.open();document.write({JsonSerializer.Serialize(html)});document.close()", cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default)
     {
         if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));

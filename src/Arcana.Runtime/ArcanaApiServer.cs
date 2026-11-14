@@ -134,6 +134,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         catch (ArgumentException error) { await ErrorAsync(context.Response, 400, "invalid_request", error.Message); }
         catch (TimeoutException error) { await ErrorAsync(context.Response, 408, "timeout", error.Message); }
         catch (KeyNotFoundException error) { await ErrorAsync(context.Response, 404, "not_found", error.Message); }
+        catch (NotSupportedException error) { await ErrorAsync(context.Response, 501, "unsupported_operation", error.Message); }
         catch (Exception error) when (error is InvalidOperationException or CdpException)
         { await ErrorAsync(context.Response, 409, "operation_failed", error.Message); }
         catch (Exception error) { await ErrorAsync(context.Response, 500, "engine_error", error.Message); }
@@ -141,10 +142,27 @@ public sealed class ArcanaApiServer : IAsyncDisposable
 
     private async Task CreatePageAsync(HttpListenerContext context, CancellationToken cancellationToken)
     {
-        var body = await ReadJsonAsync<CreateRequest>(context.Request, cancellationToken);
+        var body = await ReadBoundedJsonAsync<CreateRequest>(context.Request, 2 * 1024 * 1024, cancellationToken);
+        if (body?.Html is { Length: > 1_048_576 }) throw new ArgumentException("inline HTML must not exceed 1 MiB.");
+        if (body?.Html is not null && body.Url is not null && body.Url != "about:blank")
+            throw new ArgumentException("inline HTML can only be loaded at about:blank.");
         var page = await _browser.NewPageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-        await RestoreCookiesAsync(page, cancellationToken).ConfigureAwait(false);
-        if (body?.Url is not null) await page.NavigateAndWaitAsync(body.Url, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Inline about:blank documents have no cookie origin. Existing profile
+            // restoration remains in its prior order for navigated pages.
+            if (body?.Html is null)
+            {
+                await RestoreCookiesAsync(page, cancellationToken).ConfigureAwait(false);
+                if (body?.Url is not null) await page.NavigateAndWaitAsync(body.Url, cancellationToken).ConfigureAwait(false);
+            }
+            else await page.SetContentAsync(body.Html, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try { await page.CloseAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            throw;
+        }
         var id = Guid.NewGuid().ToString("N");
         _pages[id] = page;
         StartLogCapture(id, page);
@@ -171,7 +189,11 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         if (context.Request.HttpMethod == "GET" && operation == "snapshot") { await JsonAsync(context.Response, 200, await page.SnapshotAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "cookies") { await JsonAsync(context.Response, 200, await page.GetCookiesAsync(cancellationToken)); return; }
         if (context.Request.HttpMethod == "GET" && operation == "storage") { await JsonAsync(context.Response, 200, await page.ExportStorageAsync(cancellationToken)); return; }
-        if (context.Request.HttpMethod == "GET" && operation == "logs") { await JsonAsync(context.Response, 200, _logs.TryGetValue(id, out var log) ? log.ToArray() : Array.Empty<object>()); return; }
+        if (context.Request.HttpMethod == "GET" && operation == "logs")
+        {
+            using var events = page.Subscribe(capacity: 1);
+            await JsonAsync(context.Response, 200, _logs.TryGetValue(id, out var log) ? log.ToArray() : Array.Empty<object>()); return;
+        }
         if (context.Request.HttpMethod == "PUT" && operation is "cookies" or "storage")
         {
             using var stateDocument = await ReadDocumentAsync(context.Request, cancellationToken).ConfigureAwait(false);
@@ -259,12 +281,15 @@ public sealed class ArcanaApiServer : IAsyncDisposable
 
     private void StartLogCapture(string id, IArcanaPageBackend page)
     {
+        IArcanaEventSubscription subscription;
+        try { subscription = page.Subscribe(capacity: 256); }
+        catch (NotSupportedException) { return; }
         var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _logs[id] = new ConcurrentQueue<object>();
         _logLifetimes[id] = lifetime;
         _ = Task.Run(async () =>
         {
-            using var events = page.Subscribe(capacity: 256);
+            using var events = subscription;
             try
             {
                 await foreach (var evt in events.ReadAllAsync(lifetime.Token))
@@ -290,8 +315,8 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     {
         var id = context.Request.QueryString["pageId"];
         if (id is null || !_pages.TryGetValue(id, out var page)) { await ErrorAsync(context.Response, 404, "page_not_found", "A pageId query parameter is required."); return; }
-        var socket = (await context.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
         using var events = page.Subscribe();
+        var socket = (await context.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
         try
         {
             await foreach (var evt in events.ReadAllAsync(cancellationToken))
@@ -339,6 +364,23 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, cancellationToken);
     }
 
+    private static async Task<T?> ReadBoundedJsonAsync<T>(HttpListenerRequest request, int maxBytes, CancellationToken cancellationToken)
+    {
+        if (request.ContentLength64 > maxBytes) throw new ArgumentException("request body is too large.");
+        using var buffer = new MemoryStream(Math.Min(maxBytes, request.ContentLength64 > 0 ? (int)request.ContentLength64 : 4096));
+        var chunk = new byte[16 * 1024];
+        while (true)
+        {
+            var read = await request.InputStream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            if (buffer.Length + read > maxBytes) throw new ArgumentException("request body is too large.");
+            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+        if (buffer.Length == 0) return default;
+        return JsonSerializer.Deserialize<T>(buffer.GetBuffer().AsSpan(0, checked((int)buffer.Length)),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+
     private static async Task<JsonDocument?> ReadDocumentAsync(HttpListenerRequest request, CancellationToken cancellationToken)
     {
         if (request.ContentLength64 == 0) return null;
@@ -370,7 +412,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         listener.Start(); return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private sealed record CreateRequest(string? Url);
+    private sealed record CreateRequest(string? Url, string? Html = null);
     private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Condition = null, string? Key = null, string? Expression = null, string? Path = null,
         int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0, int? TimeoutMs = null);
     private sealed record CdpRequest(string? Method, JsonElement Parameters);

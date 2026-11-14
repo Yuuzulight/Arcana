@@ -1,73 +1,68 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Globalization;
-using System.Net;
-using System.Net.Http.Headers;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.RegularExpressions;
-using System.Threading.Channels;
 
 namespace Arcana.Runtime;
 
-/// <summary>Folio browser backend implementing the engine-neutral Arcana page API v1.</summary>
-public sealed class FolioBrowserBackend : IArcanaBrowserBackend, IAsyncDisposable
+/// <summary>Opt-in Arcana adapter for Folio's AppContainer-backed headless broker.</summary>
+public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 {
-    private readonly ArcanaOptions _options;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly string _brokerExecutable;
     private readonly ConcurrentDictionary<string, FolioPageBackend> _pages = new(StringComparer.Ordinal);
-    private readonly string? _folioExecutable;
     private bool _disposed;
 
-    public FolioBrowserBackend(ArcanaOptions options)
+    public FolioBrowserBackend(string brokerExecutable)
     {
-        options.Validate();
-        _options = options;
-        _folioExecutable = EngineLocator.ResolveFolio(options.FolioExecutablePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
+        _brokerExecutable = Path.GetFullPath(brokerExecutable);
+        if (!File.Exists(_brokerExecutable)) throw new FileNotFoundException("The Folio content broker executable was not found.", _brokerExecutable);
     }
 
-    public string? FolioExecutablePath => _folioExecutable;
+    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options)) { }
+
+    private static string ResolveBrokerPath(ArcanaOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        return options.FolioBrokerPath
+            ?? throw new ArgumentException("The Folio backend requires FolioBrokerPath to point to the broker-enabled Folio.ContentHost build.", nameof(options));
+    }
 
     public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var version = JsonSerializer.SerializeToElement(new
+        return Task.FromResult(JsonSerializer.SerializeToElement(new
         {
-            product = "Folio/0.1.0-m1.2163",
-            protocolVersion = "1.0",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Folio/0.1.0 Chrome/120.0.0.0 Safari/537.36",
-            jsVersion = "Folio.Scripting Native",
-            engine = "folio",
-            sandboxed = false,
-            contentHost = _folioExecutable is not null ? Path.GetFileName(_folioExecutable) : "managed"
-        });
-        return Task.FromResult(version);
+            product = "Folio.ContentHost/native",
+            protocolVersion = "v1",
+            backend = "folio"
+        }, JsonOptions));
     }
 
     public Task<IReadOnlyList<BrowserTab>> GetTabsAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        IReadOnlyList<BrowserTab> tabs = _pages.Values
-            .Select(page => new BrowserTab(page.TargetId, page.CurrentUrl, page.CurrentTitle))
-            .ToList();
+        IReadOnlyList<BrowserTab> tabs = _pages.Select(pair => new BrowserTab(pair.Key, pair.Value.Url, pair.Value.Title)).ToArray();
         return Task.FromResult(tabs);
     }
 
     public async Task<IArcanaPageBackend> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var targetId = "folio-target-" + Guid.NewGuid().ToString("N")[..12];
-        var page = new FolioPageBackend(this, targetId, _options, _folioExecutable);
-        _pages[targetId] = page;
-        if (url is not null)
+        if (url is not null && url != "about:blank")
+            throw new NotSupportedException("Folio pages currently accept only about:blank and inline HTML fixtures.");
+
+        var id = Guid.NewGuid().ToString("N");
+        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
+        if (!_pages.TryAdd(id, page))
         {
-            await page.NavigateAndWaitAsync(url, cancellationToken).ConfigureAwait(false);
+            await page.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+            throw new InvalidOperationException("A duplicate Folio page identifier was generated.");
         }
+        page.Closed += () => _pages.TryRemove(id, out _);
         return page;
     }
-
-    internal void RemovePage(string targetId) => _pages.TryRemove(targetId, out _);
 
     public async ValueTask DisposeAsync()
     {
@@ -75,809 +70,328 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend, IAsyncDisposabl
         _disposed = true;
         foreach (var page in _pages.Values)
         {
-            await page.DisposeAsync().ConfigureAwait(false);
+            try { await page.CloseAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch { }
         }
         _pages.Clear();
     }
-}
 
-/// <summary>A sandboxed Folio page instance implementing page lifecycle, navigation, snapshots and actions.</summary>
-public sealed class FolioPageBackend : IArcanaPageBackend, IAsyncDisposable
-{
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly FolioBrowserBackend _backend;
-    private readonly ArcanaOptions _options;
-    private readonly string? _folioExecutable;
-    private readonly HttpClientHandler _httpHandler;
-    private readonly HttpClient _httpClient;
-    private readonly CookieContainer _cookieContainer = new();
-    private readonly ConcurrentDictionary<string, string> _localStorage = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, string> _sessionStorage = new(StringComparer.Ordinal);
-    private readonly List<FolioHistoryEntry> _history = [];
-    private readonly List<CdpSubscription> _subscriptions = [];
-    private readonly object _lock = new();
-
-    private int _historyIndex = -1;
-    private int _nextElementIndex = 1;
-    private int _viewportWidth = 1280;
-    private int _viewportHeight = 720;
-    private string _currentUrl = "about:blank";
-    private string _currentTitle = "";
-    private string _currentHtml = "<html><head><title></title></head><body></body></html>";
-    private string _bodyText = "";
-    private List<PageElement> _elements = [];
-    private bool _screencastActive;
-    private bool _disposed;
-
-    internal FolioPageBackend(FolioBrowserBackend backend, string targetId, ArcanaOptions options, string? folioExecutable)
+    private static void EnsureSuccess(JsonDocument response)
     {
-        _backend = backend;
-        TargetId = targetId;
-        _options = options;
-        _folioExecutable = folioExecutable;
-
-        _httpHandler = new HttpClientHandler
-        {
-            CookieContainer = _cookieContainer,
-            UseCookies = true,
-            AllowAutoRedirect = true,
-            MaxAutomaticRedirections = 10,
-            UseProxy = false
-        };
-        _httpClient = new HttpClient(_httpHandler) { Timeout = TimeSpan.FromSeconds(30) };
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Folio/0.1.0 Chrome/120.0.0.0 Safari/537.36");
-
-        RecordHistory("about:blank", "", _currentHtml);
+        if (response.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True) return;
+        var code = response.RootElement.TryGetProperty("error", out var error) && error.TryGetProperty("code", out var codeValue) ? codeValue.GetString() : null;
+        var message = response.RootElement.TryGetProperty("error", out error) && error.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
+        if (code is "unsupported" or "sandbox_unavailable" or "sandbox_bypassed")
+            throw new NotSupportedException(message ?? "The Folio sandbox does not support this operation in the current environment.");
+        throw new InvalidOperationException(message ?? $"Folio broker operation failed ({code ?? "unknown"}).");
     }
 
-    public string TargetId { get; }
-    public string CurrentUrl { get { lock (_lock) return _currentUrl; } }
-    public string CurrentTitle { get { lock (_lock) return _currentTitle; } }
-    public int ViewportWidth { get { lock (_lock) return _viewportWidth; } }
-    public int ViewportHeight { get { lock (_lock) return _viewportHeight; } }
-
-    public async Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default)
+    private sealed class FolioPageBackend : IArcanaPageBackend
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(url)) throw new ArgumentException("Url cannot be empty.", nameof(url));
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https" or "about"))
-            throw new ArgumentException("Arcana navigation only accepts http, https, or about URLs.", nameof(url));
+        private const string BlankHtml = "<!doctype html><html><head><title></title></head><body></body></html>";
+        private readonly BrokerConnection _broker;
+        private bool _closed;
 
-        ValidateSecurityBoundary(uri);
-
-        string html;
-        string resolvedUrl = url;
-        if (uri.Scheme == "about")
+        private FolioPageBackend(BrokerConnection broker, string url)
         {
-            html = "<html><head><title></title></head><body></body></html>";
-        }
-        else
-        {
-            using var response = await _httpClient.GetAsync(uri, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            resolvedUrl = response.RequestMessage?.RequestUri?.ToString() ?? url;
-            html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            _broker = broker;
+            Url = url;
         }
 
-        lock (_lock)
-        {
-            _currentUrl = resolvedUrl;
-            _currentHtml = html;
-            ParseDocument(html, resolvedUrl);
-            RecordHistory(resolvedUrl, _currentTitle, html);
-        }
+        public event Action? Closed;
+        public string Url { get; private set; }
+        public string Title { get; private set; } = "";
 
-        PublishEvent("Page.frameNavigated", new { frame = new { id = TargetId, url = resolvedUrl } });
-        PublishEvent("Page.domContentEventFired", new { timestamp = Stopwatch.GetTimestamp() });
-        PublishEvent("Page.loadEventFired", new { timestamp = Stopwatch.GetTimestamp() });
-        if (_screencastActive) PublishScreencastFrame();
-    }
-
-    public Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_lock)
+        public static async Task<FolioPageBackend> CreateAsync(string executable, string url, CancellationToken cancellationToken)
         {
-            var snapshot = new PageSnapshot(_currentUrl, _currentTitle, _elements.AsReadOnly(), false)
+            var connection = await BrokerConnection.StartAsync(executable, cancellationToken).ConfigureAwait(false);
+            var page = new FolioPageBackend(connection, url);
+            try
             {
-                Text = _bodyText,
-                TextTruncated = false
-            };
-            return Task.FromResult(snapshot);
+                await page.LoadAsync(BlankHtml, cancellationToken).ConfigureAwait(false);
+                return page;
+            }
+            catch
+            {
+                await page.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
         }
+
+        public Task SetContentAsync(string html, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(html);
+            return LoadAsync(html, cancellationToken);
+        }
+
+        private async Task LoadAsync(string html, CancellationToken cancellationToken)
+        {
+            using var response = await _broker.RequestAsync("load", new { html, urlLabel = Url }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default)
+        {
+            var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
+                throw new InvalidOperationException("Folio broker did not return a page snapshot.");
+            var pageSnapshot = snapshot.Deserialize<PageSnapshot>(JsonOptions)
+                ?? throw new InvalidOperationException("Folio broker returned an invalid page snapshot.");
+            Url = pageSnapshot.Url;
+            Title = pageSnapshot.Title;
+            return pageSnapshot;
+        }
+
+        private async Task UpdateSnapshotMetadataAsync(CancellationToken cancellationToken)
+        {
+            using var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
+                throw new InvalidOperationException("Folio broker did not return a page snapshot.");
+            Title = snapshot.TryGetProperty("title", out var title) ? title.GetString() ?? "" : "";
+            Url = snapshot.TryGetProperty("url", out var url) ? url.GetString() ?? Url : Url;
+        }
+
+        public async Task<JsonElement> EvaluateAsync(string expression, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(expression);
+            var wrapped = $"JSON.stringify(({{ value: ({expression}) }}))";
+            var response = await _broker.RequestAsync("evaluate", new { expression = wrapped }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            if (!response.RootElement.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
+                return JsonSerializer.SerializeToElement<object?>(null);
+            using var parsed = JsonDocument.Parse(value.GetString() ?? "null");
+            return parsed.RootElement.TryGetProperty("value", out var result) ? result.Clone() : JsonSerializer.SerializeToElement<object?>(null);
+        }
+
+        public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default) =>
+            Task.FromException(new NotSupportedException("Folio navigation is not supported in this offline fixture slice."));
+
+        public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default) =>
+            Task.FromException(new NotSupportedException("Folio network-idle waiting is not supported because this backend does not enable network access."));
+
+        public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
+        public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
+        public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default) => Unsupported<PageStorageState>("storage");
+        public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default) => Unsupported("storage");
+        public Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default) => Unsupported<byte[]>("screenshot");
+        public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
+        public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
+        public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
+        public Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("reload");
+        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
+        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
+        public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");
+        public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported("click-at");
+        public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported("keyboard input");
+        public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("typing");
+        public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("scrolling");
+        public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
+        public Task ClickAsync(string reference, CancellationToken cancellationToken = default) => Unsupported("click");
+        public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("fill");
+        public Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("select");
+
+        private static Task Unsupported(string feature) => Task.FromException(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));
+        private static Task<T> Unsupported<T>(string feature) => Task.FromException<T>(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));
+
+        private async Task<JsonElement> CloseCoreAsync(CancellationToken cancellationToken)
+        {
+            if (_closed) return JsonSerializer.SerializeToElement(new { ok = true });
+            _closed = true;
+            try
+            {
+                return await _broker.CloseAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await _broker.DisposeAsync().ConfigureAwait(false);
+                Closed?.Invoke();
+            }
+        }
+
     }
 
-    public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default)
+    private sealed class BrokerConnection : IAsyncDisposable
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_lock)
+        private const int MaxResponseChars = 2 * 1024 * 1024;
+        private readonly Process _process;
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private readonly BoundedLineReader _reader;
+        private long _nextId;
+        private int _disposed;
+        private int _terminated;
+
+        private BrokerConnection(Process process)
         {
-            var cookies = new List<object>();
-            if (Uri.TryCreate(_currentUrl, UriKind.Absolute, out var uri))
+            _process = process;
+            _reader = new BoundedLineReader(process.StandardOutput);
+            _ = process.StandardError.ReadToEndAsync();
+        }
+
+        public static async Task<BrokerConnection> StartAsync(string executable, CancellationToken cancellationToken)
+        {
+            var startInfo = CreateStartInfo(executable);
+            var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start the Folio broker.");
+            var connection = new BrokerConnection(process);
+            try
             {
-                foreach (Cookie cookie in _cookieContainer.GetCookies(uri))
+                using var hello = await connection.RequestAsync("hello", new { }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(hello);
+                if (!hello.RootElement.TryGetProperty("sandboxed", out var sandboxed) || sandboxed.ValueKind != JsonValueKind.True)
+                    throw new InvalidOperationException("Folio broker did not confirm its sandboxed content process.");
+                return connection;
+            }
+            catch
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public async Task<JsonDocument> RequestAsync(string operation, object payload, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(35));
+            var gateHeld = false;
+            try
+            {
+                await _gate.WaitAsync(timeout.Token).ConfigureAwait(false);
+                gateHeld = true;
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _terminated) != 0, this);
+                var id = Interlocked.Increment(ref _nextId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                using var payloadDocument = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
+                var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
                 {
-                    cookies.Add(new
-                    {
-                        name = cookie.Name,
-                        value = cookie.Value,
-                        domain = cookie.Domain,
-                        path = cookie.Path,
-                        expires = cookie.Expires == DateTime.MinValue ? -1 : ((DateTimeOffset)cookie.Expires).ToUnixTimeSeconds(),
-                        httpOnly = cookie.HttpOnly,
-                        secure = cookie.Secure,
-                        sameSite = "Lax"
-                    });
-                }
-            }
-            return Task.FromResult(JsonSerializer.SerializeToElement(new { cookies }));
-        }
-    }
-
-    public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(cookies);
-        lock (_lock)
-        {
-            Uri.TryCreate(_currentUrl, UriKind.Absolute, out var currentUri);
-            foreach (var item in cookies)
-            {
-                var element = JsonSerializer.SerializeToElement(item);
-                var name = element.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                var value = element.TryGetProperty("value", out var v) ? v.GetString() ?? "" : "";
-                var domain = element.TryGetProperty("domain", out var d) ? d.GetString() : currentUri?.Host;
-                var path = element.TryGetProperty("path", out var p) ? p.GetString() : "/";
-                if (string.IsNullOrWhiteSpace(name)) continue;
-
-                var cookie = new Cookie(name, value, path, domain);
-                if (currentUri is not null) _cookieContainer.Add(currentUri, cookie);
-                else if (!string.IsNullOrWhiteSpace(domain)) _cookieContainer.Add(new Uri($"http://{domain.TrimStart('.')}/"), cookie);
-            }
-            return Task.FromResult(JsonSerializer.SerializeToElement(new { success = true }));
-        }
-    }
-
-    public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_lock)
-        {
-            var origin = Uri.TryCreate(_currentUrl, UriKind.Absolute, out var uri)
-                ? $"{uri.Scheme}://{uri.Authority}"
-                : "null";
-
-            var cookies = new List<object>();
-            if (uri is not null)
-            {
-                foreach (Cookie cookie in _cookieContainer.GetCookies(uri))
-                {
-                    cookies.Add(new
-                    {
-                        name = cookie.Name,
-                        value = cookie.Value,
-                        domain = cookie.Domain,
-                        path = cookie.Path,
-                        expires = cookie.Expires == DateTime.MinValue ? -1 : ((DateTimeOffset)cookie.Expires).ToUnixTimeSeconds(),
-                        httpOnly = cookie.HttpOnly,
-                        secure = cookie.Secure,
-                        sameSite = "Lax"
-                    });
-                }
-            }
-
-            var cookiesJson = JsonSerializer.SerializeToElement(cookies);
-            var state = new PageStorageState(
-                origin,
-                new Dictionary<string, string>(_localStorage),
-                new Dictionary<string, string>(_sessionStorage),
-                cookiesJson);
-            return Task.FromResult(state);
-        }
-    }
-
-    public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(state);
-        lock (_lock)
-        {
-            var origin = Uri.TryCreate(_currentUrl, UriKind.Absolute, out var uri)
-                ? $"{uri.Scheme}://{uri.Authority}"
-                : "null";
-            if (!string.Equals(origin, state.Origin, StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Navigate to the storage state's origin before restoring it.", nameof(state));
-
-            _localStorage.Clear();
-            foreach (var kvp in state.LocalStorage) _localStorage[kvp.Key] = kvp.Value;
-
-            _sessionStorage.Clear();
-            foreach (var kvp in state.SessionStorage) _sessionStorage[kvp.Key] = kvp.Value;
-
-            if (state.Cookies.ValueKind == JsonValueKind.Array)
-            {
-                var cookieArray = state.Cookies.EnumerateArray().Select(c => (object)c.Clone()).ToArray();
-                return SetCookiesAsync(cookieArray, cancellationToken);
-            }
-            return Task.CompletedTask;
-        }
-    }
-
-    public Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (format is not ("png" or "jpeg")) throw new ArgumentException("Screenshot format must be png or jpeg.", nameof(format));
-
-        // Generate valid standalone image bytes
-        byte[] imageBytes = format == "jpeg"
-            ? CreateMinimalJpeg()
-            : CreateMinimalPng(ViewportWidth, ViewportHeight);
-
-        return Task.FromResult(imageBytes);
-    }
-
-    public Task<JsonElement> EvaluateAsync(string expression, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(expression);
-        lock (_lock)
-        {
-            var trimmed = expression.Trim();
-            if (trimmed.Equals("document.title", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult(JsonSerializer.SerializeToElement(_currentTitle));
-            if (trimmed.Equals("location.href", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult(JsonSerializer.SerializeToElement(_currentUrl));
-            if (trimmed.Equals("location.origin", StringComparison.OrdinalIgnoreCase))
-            {
-                var origin = Uri.TryCreate(_currentUrl, UriKind.Absolute, out var uri) ? $"{uri.Scheme}://{uri.Authority}" : "null";
-                return Task.FromResult(JsonSerializer.SerializeToElement(origin));
-            }
-            if (trimmed.Equals("document.readyState", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult(JsonSerializer.SerializeToElement("complete"));
-            if (trimmed.Equals("document.body?.innerText ?? ''", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult(JsonSerializer.SerializeToElement(_bodyText));
-
-            // Query selector matching
-            if (trimmed.StartsWith("Array.from(document.querySelectorAll(", StringComparison.OrdinalIgnoreCase))
-            {
-                var match = Regex.Match(trimmed, @"document\.querySelectorAll\(['""]([^'""]+)['""]\)");
-                if (match.Success)
-                {
-                    var selector = match.Groups[1].Value;
-                    var results = _elements.Where(el => MatchesSelector(el, selector))
-                        .Select(el => new { tag = el.Tag.ToLowerInvariant(), text = el.Name })
-                        .ToList();
-                    return Task.FromResult(JsonSerializer.SerializeToElement(results));
-                }
-            }
-
-            // Storage evaluation
-            if (trimmed.Contains("localStorage", StringComparison.OrdinalIgnoreCase) || trimmed.Contains("sessionStorage", StringComparison.OrdinalIgnoreCase))
-            {
-                var origin = Uri.TryCreate(_currentUrl, UriKind.Absolute, out var uri) ? $"{uri.Scheme}://{uri.Authority}" : "null";
-                var storageObj = new
-                {
-                    origin,
-                    local = new Dictionary<string, string>(_localStorage),
-                    session = new Dictionary<string, string>(_sessionStorage)
+                    ["id"] = JsonSerializer.SerializeToElement(id),
+                    ["op"] = JsonSerializer.SerializeToElement(operation)
                 };
-                return Task.FromResult(JsonSerializer.SerializeToElement(storageObj));
+                foreach (var property in payloadDocument.RootElement.EnumerateObject()) fields[property.Name] = property.Value.Clone();
+                var request = JsonSerializer.Serialize(fields, JsonOptions);
+                await _process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
+                await _process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
+                var line = await _reader.ReadLineAsync(MaxResponseChars, timeout.Token).ConfigureAwait(false)
+                    ?? throw new IOException("Folio broker closed its response stream.");
+                var response = JsonDocument.Parse(line);
+                if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != id)
+                {
+                    response.Dispose();
+                    throw new InvalidDataException("Folio broker returned a response for a different request.");
+                }
+                if (operation == "close") Interlocked.Exchange(ref _terminated, 1);
+                return response;
             }
-
-            // Boolean condition evaluation
-            if (trimmed.StartsWith("Boolean(", StringComparison.OrdinalIgnoreCase) || trimmed.Contains("!==", StringComparison.Ordinal))
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                return Task.FromResult(JsonSerializer.SerializeToElement(true));
+                Interlocked.Exchange(ref _terminated, 1);
+                await KillAsync().ConfigureAwait(false);
+                throw new TimeoutException("Folio broker request timed out.");
             }
-
-            return Task.FromResult(JsonSerializer.SerializeToElement<object?>(null));
-        }
-    }
-
-    public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(method);
-
-        lock (_lock)
-        {
-            switch (method)
+            catch (OperationCanceledException)
             {
-                case "Page.getLayoutMetrics":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new
-                    {
-                        layoutViewport = new { pageX = 0, pageY = 0, clientWidth = ViewportWidth, clientHeight = ViewportHeight },
-                        contentSize = new { x = 0, y = 0, width = ViewportWidth, height = ViewportHeight }
-                    }));
-
-                case "Page.captureScreenshot":
-                    var pngBytes = CreateMinimalPng(ViewportWidth, ViewportHeight);
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { data = Convert.ToBase64String(pngBytes) }));
-
-                case "Runtime.evaluate":
-                    string expr = "";
-                    if (parameters is not null)
-                    {
-                        var json = JsonSerializer.SerializeToElement(parameters);
-                        if (json.TryGetProperty("expression", out var ep)) expr = ep.GetString() ?? "";
-                    }
-                    var evalResult = EvaluateAsync(expr, cancellationToken).GetAwaiter().GetResult();
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { result = new { type = "object", value = evalResult } }));
-
-                case "DOM.getDocument":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new
-                    {
-                        root = new { nodeId = 1, nodeName = "#document", childNodeCount = 1 }
-                    }));
-
-                case "DOM.querySelector":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { nodeId = 2 }));
-
-                case "DOM.setFileInputFiles":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Network.getCookies":
-                    return GetCookiesAsync(cancellationToken);
-
-                case "Network.setCookies":
-                    if (parameters is not null)
-                    {
-                        var json = JsonSerializer.SerializeToElement(parameters);
-                        if (json.TryGetProperty("cookies", out var arr) && arr.ValueKind == JsonValueKind.Array)
-                        {
-                            var cookieList = arr.EnumerateArray().Select(c => (object)c.Clone()).ToArray();
-                            SetCookiesAsync(cookieList, cancellationToken).GetAwaiter().GetResult();
-                        }
-                    }
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Network.clearBrowserCookies":
-                    // Clear cookies for current origin
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Network.setExtraHTTPHeaders":
-                    if (parameters is not null)
-                    {
-                        var json = JsonSerializer.SerializeToElement(parameters);
-                        if (json.TryGetProperty("headers", out var h) && h.ValueKind == JsonValueKind.Object)
-                        {
-                            foreach (var prop in h.EnumerateObject())
-                            {
-                                _httpClient.DefaultRequestHeaders.Remove(prop.Name);
-                                _httpClient.DefaultRequestHeaders.TryAddWithoutValidation(prop.Name, prop.Value.GetString() ?? "");
-                            }
-                        }
-                    }
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Emulation.setDeviceMetricsOverride":
-                    if (parameters is not null)
-                    {
-                        var json = JsonSerializer.SerializeToElement(parameters);
-                        if (json.TryGetProperty("width", out var w)) _viewportWidth = w.GetInt32();
-                        if (json.TryGetProperty("height", out var h)) _viewportHeight = h.GetInt32();
-                    }
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Page.getNavigationHistory":
-                    var historyEntries = _history.Select((e, i) => new { id = e.EntryId, url = e.Url, title = e.Title }).ToList();
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new
-                    {
-                        currentIndex = _historyIndex,
-                        entries = historyEntries
-                    }));
-
-                case "Page.navigateToHistoryEntry":
-                    if (parameters is not null)
-                    {
-                        var json = JsonSerializer.SerializeToElement(parameters);
-                        if (json.TryGetProperty("entryId", out var ep))
-                        {
-                            var targetId = ep.GetInt32();
-                            var foundIndex = _history.FindIndex(e => e.EntryId == targetId);
-                            if (foundIndex >= 0)
-                            {
-                                _historyIndex = foundIndex;
-                                var target = _history[foundIndex];
-                                _currentUrl = target.Url;
-                                _currentTitle = target.Title;
-                                _currentHtml = target.Html;
-                                ParseDocument(target.Html, target.Url);
-                            }
-                        }
-                    }
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Page.reload":
-                    return ReloadAsync(cancellationToken);
-
-                case "Page.startScreencast":
-                    _screencastActive = true;
-                    PublishScreencastFrame();
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Page.stopScreencast":
-                    _screencastActive = false;
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Page.screencastFrameAck":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                case "Input.dispatchMouseEvent":
-                case "Input.dispatchKeyEvent":
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-
-                default:
-                    return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+                Interlocked.Exchange(ref _terminated, 1);
+                await KillAsync().ConfigureAwait(false);
+                throw;
             }
-        }
-    }
-
-    public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        var sub = new CdpSubscription(method, TargetId, capacity, RemoveSubscription);
-        lock (_lock) _subscriptions.Add(sub);
-        return sub;
-    }
-
-    private void RemoveSubscription(CdpSubscription sub)
-    {
-        lock (_lock) _subscriptions.Remove(sub);
-    }
-
-    private void PublishEvent(string method, object payload)
-    {
-        CdpSubscription[] subs;
-        lock (_lock) subs = _subscriptions.ToArray();
-        var element = JsonSerializer.SerializeToElement(payload);
-        var evt = new CdpEvent(method, element, TargetId);
-        foreach (var sub in subs) sub.Publish(evt);
-    }
-
-    private void PublishScreencastFrame()
-    {
-        var png = CreateMinimalPng(ViewportWidth, ViewportHeight);
-        PublishEvent("Page.screencastFrame", new
-        {
-            data = Convert.ToBase64String(png),
-            metadata = new
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ObjectDisposedException)
             {
-                offsetTop = 0,
-                pageScaleFactor = 1,
-                deviceWidth = ViewportWidth,
-                deviceHeight = ViewportHeight,
-                scrollOffsetX = 0,
-                scrollOffsetY = 0,
-                timestamp = Stopwatch.GetTimestamp()
-            },
-            sessionId = 1
-        });
-    }
-
-    public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default)
-    {
-        _backend.RemovePage(TargetId);
-        return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-    }
-
-    public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        string url;
-        lock (_lock) url = _currentUrl;
-        await NavigateAndWaitAsync(url, cancellationToken).ConfigureAwait(false);
-        return JsonSerializer.SerializeToElement(new { ok = true });
-    }
-
-    public Task<bool> GoBackAsync(CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_lock)
-        {
-            if (_historyIndex <= 0) return Task.FromResult(false);
-            _historyIndex--;
-            var entry = _history[_historyIndex];
-            _currentUrl = entry.Url;
-            _currentTitle = entry.Title;
-            _currentHtml = entry.Html;
-            ParseDocument(entry.Html, entry.Url);
-        }
-        PublishEvent("Page.frameNavigated", new { frame = new { id = TargetId, url = CurrentUrl } });
-        PublishEvent("Page.loadEventFired", new { timestamp = Stopwatch.GetTimestamp() });
-        return Task.FromResult(true);
-    }
-
-    public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_lock)
-        {
-            if (_historyIndex >= _history.Count - 1) return Task.FromResult(false);
-            _historyIndex++;
-            var entry = _history[_historyIndex];
-            _currentUrl = entry.Url;
-            _currentTitle = entry.Title;
-            _currentHtml = entry.Html;
-            ParseDocument(entry.Html, entry.Url);
-        }
-        PublishEvent("Page.frameNavigated", new { frame = new { id = TargetId, url = CurrentUrl } });
-        PublishEvent("Page.loadEventFired", new { timestamp = Stopwatch.GetTimestamp() });
-        return Task.FromResult(true);
-    }
-
-    public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
-        return Task.CompletedTask;
-    }
-
-    public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (width is < 1 or > 8192 || height is < 1 or > 8192) throw new ArgumentOutOfRangeException(nameof(width));
-        lock (_lock)
-        {
-            _viewportWidth = width;
-            _viewportHeight = height;
-        }
-        return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-    }
-
-    public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
-        return Task.CompletedTask;
-    }
-
-    public Task PressKeyAsync(string key, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return Task.CompletedTask;
-    }
-
-    public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-    }
-
-    public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
-        return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
-    }
-
-    public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        if (!File.Exists(path)) throw new FileNotFoundException("Upload file was not found.", path);
-
-        lock (_lock)
-        {
-            var element = _elements.FirstOrDefault(e => e.Reference == reference);
-            if (element is null) throw new InvalidOperationException("Element reference was not found.");
-        }
-        return Task.CompletedTask;
-    }
-
-    public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-
-        PageElement? target;
-        lock (_lock) target = _elements.FirstOrDefault(e => e.Reference == reference);
-        if (target is null) throw new InvalidOperationException("Element reference was not found.");
-
-        if (target.Tag == "a" && !string.IsNullOrWhiteSpace(target.Href))
-        {
-            var nextUrl = target.Href;
-            if (Uri.TryCreate(new Uri(CurrentUrl), nextUrl, out var resolved))
-                await NavigateAndWaitAsync(resolved.ToString(), cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        ArgumentNullException.ThrowIfNull(value);
-
-        lock (_lock)
-        {
-            var index = _elements.FindIndex(e => e.Reference == reference);
-            if (index < 0) throw new InvalidOperationException("Element reference was not found.");
-            var existing = _elements[index];
-            _elements[index] = new PageElement(existing.Reference, existing.Tag, existing.Role, value, existing.Href, existing.Type, existing.Disabled);
-        }
-        return Task.CompletedTask;
-    }
-
-    public Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        ArgumentNullException.ThrowIfNull(value);
-
-        lock (_lock)
-        {
-            var index = _elements.FindIndex(e => e.Reference == reference);
-            if (index < 0) throw new InvalidOperationException("Element reference was not found.");
-            var existing = _elements[index];
-            _elements[index] = new PageElement(existing.Reference, existing.Tag, existing.Role, value, existing.Href, existing.Type, existing.Disabled);
-        }
-        return Task.CompletedTask;
-    }
-
-    private void ValidateSecurityBoundary(Uri uri)
-    {
-        if (uri.Scheme is not ("http" or "https" or "about"))
-            throw new ArgumentException("Arcana navigation only accepts http, https, or about URLs.");
-
-        if (_options.AllowPrivateNetwork || uri.Scheme == "about") return;
-
-        // Loopback is always permitted for local testing and companion services
-        if (IPAddress.TryParse(uri.Host, out var ip))
-        {
-            if (IPAddress.IsLoopback(ip)) return;
-            if (IsPrivateIp(ip))
-                throw new InvalidOperationException($"Private network navigation to {uri.Host} is disallowed by security policy.");
-        }
-        else if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-    }
-
-    private static bool IsPrivateIp(IPAddress ip)
-    {
-        var bytes = ip.GetAddressBytes();
-        if (bytes.Length == 4)
-        {
-            if (bytes[0] == 10) return true;
-            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
-            if (bytes[0] == 192 && bytes[1] == 168) return true;
-            if (bytes[0] == 169 && bytes[1] == 254) return true; // Link-local
-        }
-        return false;
-    }
-
-    private void RecordHistory(string url, string title, string html)
-    {
-        if (_historyIndex >= 0 && _historyIndex < _history.Count - 1)
-        {
-            _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
-        }
-        var entry = new FolioHistoryEntry(url, title, html, _history.Count + 1);
-        _history.Add(entry);
-        _historyIndex = _history.Count - 1;
-    }
-
-    private void ParseDocument(string html, string baseUrl)
-    {
-        _nextElementIndex = 1;
-        _elements.Clear();
-
-        // Extract Title
-        var titleMatch = Regex.Match(html, @"<title[^>]*>(.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        _currentTitle = titleMatch.Success ? WebUtility.HtmlDecode(titleMatch.Groups[1].Value.Trim()) : "";
-
-        // Extract body text
-        var bodyMatch = Regex.Match(html, @"<body[^>]*>(.*?)</body>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        var bodyHtml = bodyMatch.Success ? bodyMatch.Groups[1].Value : html;
-        _bodyText = Regex.Replace(bodyHtml, @"<[^>]+>", " ");
-        _bodyText = WebUtility.HtmlDecode(Regex.Replace(_bodyText, @"\s+", " ").Trim());
-
-        // Extract interactive controls
-        // Links
-        foreach (Match match in Regex.Matches(html, @"<a\s+([^>]*?)>(.*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Singleline))
-        {
-            var attrs = match.Groups[1].Value;
-            var text = WebUtility.HtmlDecode(Regex.Replace(match.Groups[2].Value, @"<[^>]+>", " ").Trim());
-            var hrefMatch = Regex.Match(attrs, @"href=['""]([^'""]*)['""]", RegexOptions.IgnoreCase);
-            var href = hrefMatch.Success ? hrefMatch.Groups[1].Value : null;
-            var refId = "el" + _nextElementIndex++;
-            _elements.Add(new PageElement(refId, "a", "link", text, href, null, false));
+                Interlocked.Exchange(ref _terminated, 1);
+                await KillAsync().ConfigureAwait(false);
+                throw;
+            }
+            finally { if (gateHeld) _gate.Release(); }
         }
 
-        // Buttons
-        foreach (Match match in Regex.Matches(html, @"<button\s*([^>]*?)>(.*?)</button>", RegexOptions.IgnoreCase | RegexOptions.Singleline))
+        public async Task<JsonElement> CloseAsync(CancellationToken cancellationToken)
         {
-            var text = WebUtility.HtmlDecode(Regex.Replace(match.Groups[2].Value, @"<[^>]+>", " ").Trim());
-            var refId = "el" + _nextElementIndex++;
-            _elements.Add(new PageElement(refId, "button", "button", text, null, null, false));
+            using var response = await RequestAsync("close", new { }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            var result = response.RootElement.Clone();
+            await DisposeAsync().ConfigureAwait(false);
+            return result;
         }
 
-        // Inputs
-        foreach (Match match in Regex.Matches(html, @"<input\s+([^>]*?)/?>", RegexOptions.IgnoreCase | RegexOptions.Singleline))
+        public async ValueTask DisposeAsync()
         {
-            var attrs = match.Groups[1].Value;
-            var typeMatch = Regex.Match(attrs, @"type=['""]([^'""]*)['""]", RegexOptions.IgnoreCase);
-            var type = typeMatch.Success ? typeMatch.Groups[1].Value.ToLowerInvariant() : "text";
-            var valueMatch = Regex.Match(attrs, @"value=['""]([^'""]*)['""]", RegexOptions.IgnoreCase);
-            var value = valueMatch.Success ? valueMatch.Groups[1].Value : "";
-            var nameMatch = Regex.Match(attrs, @"name=['""]([^'""]*)['""]", RegexOptions.IgnoreCase);
-            var name = nameMatch.Success ? nameMatch.Groups[1].Value : "";
-
-            var role = type switch
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            Interlocked.Exchange(ref _terminated, 1);
+            if (!_process.HasExited)
             {
-                "button" or "submit" or "reset" => "button",
-                "checkbox" => "checkbox",
-                "radio" => "radio",
-                _ => "textbox"
+                try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+                catch (TimeoutException) { await KillAsync().ConfigureAwait(false); }
+                catch (InvalidOperationException) { }
+            }
+            _process.Dispose();
+        }
+
+        private async Task KillAsync()
+        {
+            try
+            {
+                if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            }
+            catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
+            _process.Dispose();
+        }
+
+        private static ProcessStartInfo CreateStartInfo(string executable)
+        {
+            var path = Path.GetFullPath(executable);
+            var isAssembly = Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = isAssembly ? "dotnet" : path,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             };
-
-            var refId = "el" + _nextElementIndex++;
-            _elements.Add(new PageElement(refId, "input", role, string.IsNullOrWhiteSpace(value) ? name : value, null, type, false));
+            if (isAssembly) startInfo.ArgumentList.Add(path);
+            startInfo.ArgumentList.Add("--broker");
+            startInfo.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
+            return startInfo;
         }
 
-        // Selects
-        foreach (Match match in Regex.Matches(html, @"<select\s*([^>]*?)>(.*?)</select>", RegexOptions.IgnoreCase | RegexOptions.Singleline))
+        private sealed class BoundedLineReader(TextReader reader)
         {
-            var attrs = match.Groups[1].Value;
-            var nameMatch = Regex.Match(attrs, @"name=['""]([^'""]*)['""]", RegexOptions.IgnoreCase);
-            var name = nameMatch.Success ? nameMatch.Groups[1].Value : "select";
-            var refId = "el" + _nextElementIndex++;
-            _elements.Add(new PageElement(refId, "select", "combobox", name, null, null, false));
+            private readonly char[] _buffer = new char[4096];
+            private int _offset;
+            private int _length;
+
+            public async Task<string?> ReadLineAsync(int maxChars, CancellationToken cancellationToken)
+            {
+                var line = new System.Text.StringBuilder(Math.Min(maxChars, 4096));
+                while (true)
+                {
+                    if (_offset == _length)
+                    {
+                        _length = await reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                        _offset = 0;
+                        if (_length == 0)
+                        {
+                            if (line.Length == 0) return null;
+                            throw new InvalidDataException("Folio broker ended a response before the JSON line was complete.");
+                        }
+                    }
+
+                    var newline = Array.IndexOf(_buffer, '\n', _offset, _length - _offset);
+                    var count = (newline >= 0 ? newline : _length) - _offset;
+                    if (line.Length + count > maxChars)
+                        throw new InvalidDataException("Folio broker response exceeded the configured size limit.");
+                    line.Append(_buffer, _offset, count);
+                    _offset += count;
+                    if (newline >= 0)
+                    {
+                        _offset++;
+                        if (line.Length > 0 && line[^1] == '\r') line.Length--;
+                        return line.ToString();
+                    }
+                }
+            }
         }
-    }
-
-    private static bool MatchesSelector(PageElement element, string selector)
-    {
-        if (selector == "*") return true;
-        var parts = selector.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        foreach (var part in parts)
-        {
-            if (part.Equals(element.Tag, StringComparison.OrdinalIgnoreCase)) return true;
-            if (part.Equals(element.Role, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
-    }
-
-    private static byte[] CreateMinimalPng(int width, int height)
-    {
-        // Standalone valid 1x1 RGBA PNG
-        return [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-            0x00, 0x00, 0x00, 0x0D,                         // IHDR length 13
-            0x49, 0x48, 0x44, 0x52,                         // "IHDR"
-            0x00, 0x00, 0x00, 0x01,                         // width 1
-            0x00, 0x00, 0x00, 0x01,                         // height 1
-            0x08, 0x06, 0x00, 0x00, 0x00,                   // 8-bit RGBA
-            0x1F, 0x15, 0xC4, 0x89,                         // IHDR CRC
-            0x00, 0x00, 0x00, 0x0A,                         // IDAT length 10
-            0x49, 0x44, 0x41, 0x54,                         // "IDAT"
-            0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, // compressed image data
-            0x0D, 0x0A, 0x2D, 0xB4,                         // IDAT CRC
-            0x00, 0x00, 0x00, 0x00,                         // IEND length 0
-            0x49, 0x45, 0x4E, 0x44,                         // "IEND"
-            0xAE, 0x42, 0x60, 0x82                          // IEND CRC
-        ];
-    }
-
-    private static byte[] CreateMinimalJpeg()
-    {
-        // Minimal valid SOI + EOI JPEG marker
-        return [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9];
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        if (_disposed) return ValueTask.CompletedTask;
-        _disposed = true;
-        _httpClient.Dispose();
-        _httpHandler.Dispose();
-        foreach (var sub in _subscriptions) sub.Dispose();
-        _subscriptions.Clear();
-        return ValueTask.CompletedTask;
     }
 }
-
-internal sealed record FolioHistoryEntry(string Url, string Title, string Html, int EntryId);

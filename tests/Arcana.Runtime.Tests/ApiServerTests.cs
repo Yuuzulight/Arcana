@@ -294,6 +294,26 @@ public sealed class ApiServerTests
                 "Health engine.product did not match ARCANA_TEST_ENGINE_ID.");
         }
 
+        if (!ctx.UseExternalEndpoint)
+        {
+            using (var emptyCreate = await ctx.Client.PostAsync("v1/pages", new ByteArrayContent([]), timeout.Token))
+            {
+                Assert.AreEqual(HttpStatusCode.Created, emptyCreate.StatusCode);
+                using var emptyResult = JsonDocument.Parse(await emptyCreate.Content.ReadAsStringAsync(timeout.Token));
+                using var emptyDelete = await ctx.Client.DeleteAsync($"v1/pages/{emptyResult.RootElement.GetProperty("pageId").GetString()}", timeout.Token);
+                Assert.AreEqual(HttpStatusCode.NoContent, emptyDelete.StatusCode);
+            }
+
+            using var oversized = await ctx.Client.PostAsync("v1/pages", new OversizedChunkedContent(), timeout.Token);
+            Assert.AreEqual(HttpStatusCode.BadRequest, oversized.StatusCode);
+
+            using var tabsBeforeInvalidCreate = JsonDocument.Parse(await ctx.Client.GetStringAsync("v1/tabs", timeout.Token));
+            using (var invalidUrl = await ctx.Client.PostAsJsonAsync("v1/pages", new { url = "file:///C:/private.txt" }, timeout.Token))
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidUrl.StatusCode);
+            using var tabsAfterInvalidCreate = JsonDocument.Parse(await ctx.Client.GetStringAsync("v1/tabs", timeout.Token));
+            Assert.AreEqual(tabsBeforeInvalidCreate.RootElement.GetArrayLength(), tabsAfterInvalidCreate.RootElement.GetArrayLength(), "A failed page load must close the newly created browser target.");
+        }
+
         using var create = await ctx.Client.PostAsJsonAsync("v1/pages", new { url = site.Origin }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.Created, create.StatusCode);
         using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync(timeout.Token));
@@ -513,4 +533,12 @@ public sealed class ApiServerTests
         using var deleted = await ctx.Client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
     }
+}
+
+internal sealed class OversizedChunkedContent : HttpContent
+{
+    protected override async Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+        => await stream.WriteAsync(new byte[2 * 1024 * 1024 + 1]);
+
+    protected override bool TryComputeLength(out long length) { length = 0; return false; }
 }
