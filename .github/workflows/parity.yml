@@ -38,3 +38,16 @@ jobs:
         with:
           name: parity-results
           path: '**/TestResults/*.trx'
+
+  shutdown-contract:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify engine-independent shutdown regressions
+        shell: pwsh
+        run: |
+          dotnet test Arcana.slnx -c Release --filter 'FullyQualifiedName~ShutdownClosesOtherPagesWhenOneCloseFails|FullyQualifiedName~ShutdownWaitsForInflightPageCreationAndClosesTheCreatedPage'
