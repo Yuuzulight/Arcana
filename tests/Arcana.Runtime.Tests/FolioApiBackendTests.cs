@@ -79,7 +79,9 @@ public sealed class FolioApiBackendTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var before = GetProcessIds(broker!);
-        var start = new ProcessStartInfo(cli!)
+        var cliPath = Path.GetFullPath(cli!);
+        var cliIsAssembly = Path.GetExtension(cliPath).Equals(".dll", StringComparison.OrdinalIgnoreCase);
+        var start = new ProcessStartInfo(cliIsAssembly ? "dotnet" : cliPath)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -87,6 +89,7 @@ public sealed class FolioApiBackendTests
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        if (cliIsAssembly) start.ArgumentList.Add(cliPath);
         start.ArgumentList.Add("api");
         start.ArgumentList.Add("--backend=folio");
         start.ArgumentList.Add($"--folio-broker={broker}");
