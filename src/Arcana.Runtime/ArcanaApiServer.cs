@@ -67,13 +67,24 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         var handlers = _handlers.Values.ToArray();
         try { await Task.WhenAll(handlers).ConfigureAwait(false); }
         catch { /* Continue shutdown after handlers have completed, even if a client disconnected mid-response. */ }
-        foreach (var page in _pages.Values) await page.CloseAsync().ConfigureAwait(false);
-        foreach (var lifetime in _logLifetimes.Values) lifetime.Cancel();
-        foreach (var lifetime in _logLifetimes.Values) lifetime.Dispose();
+        List<Exception> pageCloseErrors = [];
+        foreach (var page in _pages.Values)
+        {
+            try { await page.CloseAsync().ConfigureAwait(false); }
+            catch (Exception error) { pageCloseErrors.Add(error); }
+        }
+        foreach (var lifetime in _logLifetimes.Values)
+        {
+            lifetime.Cancel();
+            lifetime.Dispose();
+        }
+        _logLifetimes.Clear();
         _pages.Clear();
         _logs.Clear();
         _listener.Close();
         _lifetime.Dispose();
+        if (pageCloseErrors.Count > 0)
+            throw new AggregateException("One or more Arcana pages failed to close.", pageCloseErrors);
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
