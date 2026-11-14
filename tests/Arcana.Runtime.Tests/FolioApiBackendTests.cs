@@ -78,6 +78,51 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioNavigationRefusesAnUnlistedOriginAndRetiresThePage()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        if (string.IsNullOrWhiteSpace(executable)) Assert.Inconclusive("Set ARCANA_TEST_FOLIO_NAVIGATION_BROKER to the navigation-enabled Folio host.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, ["https://allowed.invalid/fixtures/"]);
+        await using var api = new ArcanaApiServer(browser, "folio-navigation-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-navigation-token");
+
+        using var response = await client.PostAsJsonAsync("v1/pages", new { url = "https://denied.invalid/" }, timeout.Token);
+        var json = await response.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Conflict, response.StatusCode, json);
+        StringAssert.Contains(json, "origin");
+        using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
+        Assert.AreEqual(0, tabs.RootElement.GetArrayLength());
+    }
+
+    [TestMethod]
+    public async Task FolioNavigationLoadsTheAllowedHttpsDocument()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        var fixture = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_HTTPS_FIXTURE");
+        if (string.IsNullOrWhiteSpace(executable) || string.IsNullOrWhiteSpace(fixture))
+            Assert.Inconclusive("Set the navigation broker and HTTPS fixture URL to run the live navigation test.");
+        var url = new Uri(fixture!);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, [url.GetLeftPart(UriPartial.Authority)]);
+        await using var api = new ArcanaApiServer(browser, "folio-navigation-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-navigation-token");
+
+        using var response = await client.PostAsJsonAsync("v1/pages", new { url = url.AbsoluteUri }, timeout.Token);
+        var json = await response.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, response.StatusCode, json);
+        using var page = JsonDocument.Parse(json);
+        using var snapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}/snapshot", timeout.Token));
+        var root = snapshot.RootElement;
+        Assert.AreEqual(url.AbsoluteUri, root.GetProperty("url").GetString());
+        Assert.IsFalse(string.IsNullOrWhiteSpace(root.GetProperty("text").GetString()));
+    }
+
+    [TestMethod]
     public async Task ArcanaHostExitReleasesBrokerAndSandboxWorker()
     {
         if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer process cleanup is verified on Windows.");

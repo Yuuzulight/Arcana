@@ -118,6 +118,8 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
         ExecutablePath = GetOption(args, "executable"),
         FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
         FolioBrokerPath = GetOption(args, "folio-broker"),
+        FolioAllowedOrigins = args.Where(arg => arg.StartsWith("--folio-allow-origin=", StringComparison.OrdinalIgnoreCase))
+            .Select(arg => arg["--folio-allow-origin=".Length..]).ToArray(),
         ProfileDirectory = GetOption(args, "profile"),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
@@ -169,7 +171,7 @@ static void PrintHelp()
     Console.WriteLine("  engine --help     (complete engine CLI reference)");
     Console.WriteLine("  doctor");
     Console.WriteLine("  run [--backend=folio|obscura] [--executable=PATH] [--port=PORT] [--allow-private-network]");
-    Console.WriteLine("  api [--backend=folio|obscura] [--executable=PATH] [--folio-executable=PATH] [--folio-broker=PATH] [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
+    Console.WriteLine("  api [--backend=folio|obscura] [--executable=PATH] [--folio-executable=PATH] [--folio-broker=PATH] [--folio-allow-origin=HTTPS_URL]... [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
     Console.WriteLine("  snapshot URL [--backend=folio|obscura] [--executable=PATH] [--allow-private-network]");
     Console.WriteLine("  fallback https://example.com");
 }
