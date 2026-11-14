@@ -1,0 +1,64 @@
+name: Combined Folio qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      folio_commit:
+        description: Full commit SHA from Yuuzulight/Folio
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      folio_commit:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      FOLIO_COMMIT: ${{ inputs.folio_commit }}
+    steps:
+      - name: Validate Folio pin
+        shell: pwsh
+        run: |
+          if ($env:FOLIO_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Supply the full lowercase Folio commit SHA.'
+          }
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: Yuuzulight/Folio
+          ref: ${{ inputs.folio_commit }}
+          path: folio-source
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish standalone Folio broker
+        shell: pwsh
+        run: |
+          $destination = Join-Path $pwd 'folio-source/artifacts/arcana-qualification'
+          pwsh -NoProfile -File ./folio-source/tools/publish-content-host.ps1 -Destination $destination -Runtime win-x64
+          if ($LASTEXITCODE) { throw 'Folio broker publish failed.' }
+          $manifest = Get-Content (Join-Path $destination 'native-build.json') -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -cne $env:FOLIO_COMMIT -or $manifest.sourceDirty -ne $false) {
+            throw 'The Folio build manifest does not match the clean pinned revision.'
+          }
+      - name: Run combined Arcana qualification
+        shell: pwsh
+        run: |
+          ./tools/test-folio-qualification.ps1 -Broker ./folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: combined-folio-qualification
+          path: |
+            artifacts/folio-qualification/*.trx
+            folio-source/artifacts/arcana-qualification/native-build.json
