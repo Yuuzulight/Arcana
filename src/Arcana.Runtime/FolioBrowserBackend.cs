@@ -487,11 +487,14 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(35));
-            var gateHeld = false;
+            try { await _gate.WaitAsync(timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException("Timed out waiting to send a Folio broker request.");
+            }
+
             try
             {
-                await _gate.WaitAsync(timeout.Token).ConfigureAwait(false);
-                gateHeld = true;
                 ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _terminated) != 0, this);
                 var id = Interlocked.Increment(ref _nextId).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 using var payloadDocument = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
@@ -534,7 +537,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 await KillAsync().ConfigureAwait(false);
                 throw;
             }
-            finally { if (gateHeld) _gate.Release(); }
+            finally { _gate.Release(); }
         }
 
         public async Task<JsonElement> CloseAsync(CancellationToken cancellationToken)
