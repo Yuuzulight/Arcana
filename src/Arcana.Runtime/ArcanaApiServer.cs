@@ -107,6 +107,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         catch (ArgumentException error) { await ErrorAsync(context.Response, 400, "invalid_request", error.Message); }
         catch (TimeoutException error) { await ErrorAsync(context.Response, 408, "timeout", error.Message); }
         catch (KeyNotFoundException error) { await ErrorAsync(context.Response, 404, "not_found", error.Message); }
+        catch (FolioNavigationException error) { await ErrorAsync(context.Response, 409, error.Code, error.Message); }
         catch (NotSupportedException error) { await ErrorAsync(context.Response, 501, "unsupported_operation", error.Message); }
         catch (Exception error) when (error is InvalidOperationException or CdpException)
         { await ErrorAsync(context.Response, 409, "operation_failed", error.Message); }

@@ -4,6 +4,11 @@ using System.Text.Json;
 
 namespace Arcana.Runtime;
 
+internal sealed class FolioNavigationException(string code, string message) : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
+}
+
 /// <summary>Opt-in Arcana adapter for Folio's AppContainer-backed headless broker.</summary>
 public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 {
@@ -82,6 +87,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         var code = response.RootElement.TryGetProperty("error", out var error) && error.TryGetProperty("code", out var codeValue) ? codeValue.GetString() : null;
         var message = response.RootElement.TryGetProperty("error", out error) && error.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
         if (code == "timeout") throw new TimeoutException(message ?? "Folio navigation timed out.");
+        if (code is "policy_refused" or "navigation_failed")
+            throw new FolioNavigationException(code, message ?? "Folio navigation failed.");
         if (code is "unsupported" or "sandbox_unavailable" or "sandbox_bypassed")
             throw new NotSupportedException(message ?? "The Folio sandbox does not support this operation in the current environment.");
         throw new InvalidOperationException(message ?? $"Folio broker operation failed ({code ?? "unknown"}).");

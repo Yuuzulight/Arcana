@@ -92,7 +92,8 @@ public sealed class FolioApiBackendTests
         using var response = await client.PostAsJsonAsync("v1/pages", new { url = "https://denied.invalid/" }, timeout.Token);
         var json = await response.Content.ReadAsStringAsync(timeout.Token);
         Assert.AreEqual(HttpStatusCode.Conflict, response.StatusCode, json);
-        StringAssert.Contains(json, "origin");
+        using var error = JsonDocument.Parse(json);
+        Assert.AreEqual("policy_refused", error.RootElement.GetProperty("error").GetProperty("code").GetString());
         using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
         Assert.AreEqual(0, tabs.RootElement.GetArrayLength());
     }
