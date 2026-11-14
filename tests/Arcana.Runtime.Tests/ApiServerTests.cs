@@ -16,7 +16,7 @@ public sealed class ApiServerTests
     {
         public TaskCompletionSource CreationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseCreation { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public GatedPage Page { get; } = new();
+        public GatedPage Page { get; set; } = new();
 
         public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(JsonSerializer.SerializeToElement(new { product = "test" }));
@@ -37,6 +37,7 @@ public sealed class ApiServerTests
     private sealed class GatedPage : IArcanaPageBackend
     {
         public int CloseCount;
+        public Exception? CloseError { get; init; }
 
         public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default) => Unsupported();
         public Task SetContentAsync(string html, CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -52,6 +53,7 @@ public sealed class ApiServerTests
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref CloseCount);
+            if (CloseError is { } error) return Task.FromException<JsonElement>(error);
             return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
         }
         public Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
@@ -70,6 +72,32 @@ public sealed class ApiServerTests
 
         private static Task Unsupported() => Task.FromException(new NotSupportedException());
         private static Task<T> Unsupported<T>() => Task.FromException<T>(new NotSupportedException());
+    }
+
+    [TestMethod]
+    public async Task ShutdownClosesOtherPagesWhenOneCloseFails()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var failure = new InvalidOperationException("Page close failed");
+        var first = new GatedPage { CloseError = failure };
+        var second = new GatedPage();
+        await using var backend = new PageCreationGateBackend { Page = first };
+        backend.ReleaseCreation.SetResult();
+        await using var api = new ArcanaApiServer(backend, "shutdown-test");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "shutdown-test");
+
+        using var createdFirst = await client.PostAsJsonAsync("v1/pages", new { }, timeout.Token);
+        createdFirst.EnsureSuccessStatusCode();
+        backend.Page = second;
+        using var createdSecond = await client.PostAsJsonAsync("v1/pages", new { }, timeout.Token);
+        createdSecond.EnsureSuccessStatusCode();
+
+        var error = await Assert.ThrowsExceptionAsync<AggregateException>(() => api.DisposeAsync().AsTask());
+        Assert.AreSame(failure, error.InnerException);
+        Assert.AreEqual(1, first.CloseCount);
+        Assert.AreEqual(1, second.CloseCount);
     }
 
     [TestMethod]
