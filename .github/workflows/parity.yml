@@ -91,3 +91,29 @@ jobs:
         with:
           name: parity-results
           path: '**/TestResults/*.trx'
+
+  shutdown-contract:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify engine-independent shutdown regressions
+        shell: pwsh
+        run: |
+          $required = @('ShutdownClosesOtherPagesWhenOneCloseFails', 'ShutdownWaitsForInflightPageCreationAndClosesTheCreatedPage')
+          $filter = ($required | ForEach-Object { "FullyQualifiedName~$_" }) -join '|'
+          dotnet test Arcana.slnx -c Release --filter $filter --results-directory artifacts/shutdown --logger 'trx;LogFileName=shutdown.trx'
+          if ($LASTEXITCODE) { throw 'Shutdown tests failed.' }
+          [xml]$report = Get-Content artifacts/shutdown/shutdown.trx -Raw
+          $passed = @($report.SelectNodes("//*[local-name()='UnitTestResult' and @outcome='Passed']") | ForEach-Object testName)
+          foreach ($test in $required) {
+            if ($test -notin $passed) { throw "Required shutdown test did not pass: $test" }
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: shutdown-results
+          path: artifacts/shutdown/shutdown.trx
