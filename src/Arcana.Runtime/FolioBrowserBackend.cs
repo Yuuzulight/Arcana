@@ -23,6 +23,12 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
         _brokerExecutable = Path.GetFullPath(brokerExecutable);
         _allowedOrigins = allowedOrigins?.ToArray() ?? [];
+        foreach (var origin in _allowedOrigins)
+        {
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+                uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+                throw new ArgumentException("Folio allowed origins must be HTTPS origins or path prefixes without credentials, query, or fragment.", nameof(allowedOrigins));
+        }
         if (!File.Exists(_brokerExecutable)) throw new FileNotFoundException("The Folio content broker executable was not found.", _brokerExecutable);
     }
 
@@ -464,6 +470,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 EnsureSuccess(hello);
                 if (!hello.RootElement.TryGetProperty("sandboxed", out var sandboxed) || sandboxed.ValueKind != JsonValueKind.True)
                     throw new InvalidOperationException("Folio broker did not confirm its sandboxed content process.");
+                var networkEnabled = hello.RootElement.TryGetProperty("networkEnabled", out var network) && network.ValueKind == JsonValueKind.True;
+                if (networkEnabled != (allowedOrigins.Length > 0))
+                    throw new InvalidOperationException("Folio broker did not confirm the requested network policy.");
                 return connection;
             }
             catch
