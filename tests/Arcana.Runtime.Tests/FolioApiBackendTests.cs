@@ -117,13 +117,14 @@ public sealed class FolioApiBackendTests
 
         using var state = await client.PostAsJsonAsync($"{page}/evaluate", new
         {
-            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta]"
+            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta, document.getElementById('scroller').scrollTop]"
         }, timeout.Token);
         Assert.IsTrue(state.IsSuccessStatusCode, await state.Content.ReadAsStringAsync(timeout.Token));
         using var result = JsonDocument.Parse(await state.Content.ReadAsStringAsync(timeout.Token));
         Assert.AreEqual("Folio", result.RootElement[0].GetString());
         Assert.AreEqual("End", result.RootElement[1].GetString());
         Assert.AreEqual(300d, result.RootElement[2].GetDouble());
+        Assert.AreEqual(300d, result.RootElement[3].GetDouble());
 
         async Task<byte[]> Screenshot()
         {
