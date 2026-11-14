@@ -133,15 +133,34 @@ public sealed class FolioApiBackendTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(root.GetProperty("text").GetString()));
 
         var pagePath = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
-        using var blank = await client.PostAsJsonAsync($"{pagePath}/navigate", new { url = "about:blank" }, timeout.Token);
-        blank.EnsureSuccessStatusCode();
+        await Navigate("about:blank");
         await AssertHistory("back", expectedUrl);
+
+        using var refused = await client.PostAsJsonAsync($"{pagePath}/navigate", new { url = "https://denied.invalid/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Conflict, refused.StatusCode, await refused.Content.ReadAsStringAsync(timeout.Token));
+        await AssertCurrentUrl(expectedUrl);
         await AssertHistory("forward", "about:blank");
+
+        await AssertHistory("back", expectedUrl);
+        await Navigate(expectedUrl);
+        await AssertHistory("forward", expectedUrl);
+
+        async Task Navigate(string url)
+        {
+            using var move = await client.PostAsJsonAsync($"{pagePath}/navigate", new { url }, timeout.Token);
+            Assert.IsTrue(move.IsSuccessStatusCode, await move.Content.ReadAsStringAsync(timeout.Token));
+            await AssertCurrentUrl(url);
+        }
 
         async Task AssertHistory(string action, string expected)
         {
             using var move = await client.PostAsJsonAsync($"{pagePath}/{action}", new { }, timeout.Token);
             Assert.IsTrue(move.IsSuccessStatusCode, await move.Content.ReadAsStringAsync(timeout.Token));
+            await AssertCurrentUrl(expected);
+        }
+
+        async Task AssertCurrentUrl(string expected)
+        {
             using var current = JsonDocument.Parse(await client.GetStringAsync($"{pagePath}/snapshot", timeout.Token));
             Assert.AreEqual(expected, current.RootElement.GetProperty("url").GetString());
         }
