@@ -62,4 +62,13 @@ public sealed class ArcanaOptionsTests
     {
         Assert.ThrowsException<ArgumentException>(() => ArcanaFallback.OpenDefaultBrowser("file:///sensitive.txt"));
     }
+    [DataTestMethod]
+    [DataRow("http://example.com")]
+    [DataRow("https://name:secret@example.com")]
+    [DataRow("https://example.com/?q=1")]
+    [DataRow("https://example.com/#fragment")]
+    public void FolioRejectsInvalidAllowedOriginsBeforeLaunchingTheBroker(string origin)
+    {
+        Assert.ThrowsException<ArgumentException>(() => new FolioBrowserBackend("unused.exe", [origin]));
+    }
 }
