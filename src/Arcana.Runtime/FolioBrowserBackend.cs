@@ -542,6 +542,12 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         public async Task<JsonElement> CloseAsync(CancellationToken cancellationToken)
         {
+            if (Volatile.Read(ref _terminated) != 0 || _process.HasExited)
+            {
+                await DisposeAsync().ConfigureAwait(false);
+                return JsonSerializer.SerializeToElement(new { ok = true });
+            }
+
             using var response = await RequestAsync("close", new { }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             var result = response.RootElement.Clone();
