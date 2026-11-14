@@ -128,6 +128,29 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioNavigationRefusesARedirectOutsideTheAllowedPath()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
+            Assert.Inconclusive("Set the navigation broker and ARCANA_TEST_FOLIO_LIVE_WEB=1 to run the public HTTPS fixture.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, ["https://httpbingo.org/redirect-to"]);
+        await using var api = new ArcanaApiServer(browser, "folio-redirect-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-redirect-token");
+
+        using var response = await client.PostAsJsonAsync("v1/pages",
+            new { url = "https://httpbingo.org/redirect-to?url=%2Fhtml" }, timeout.Token);
+        var json = await response.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Conflict, response.StatusCode, json);
+        using var error = JsonDocument.Parse(json);
+        Assert.AreEqual("policy_refused", error.RootElement.GetProperty("error").GetProperty("code").GetString());
+        using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
+        Assert.AreEqual(0, tabs.RootElement.GetArrayLength());
+    }
+
+    [TestMethod]
     public async Task FolioNavigationRunsARelativeExternalScript()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
