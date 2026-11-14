@@ -110,7 +110,10 @@ public sealed class FolioApiBackendTests
         await Act("click-at", new { x = 20, y = 15 });
         await Act("type", new { value = "Folio" });
         await Act("press", new { key = "End" });
+        var beforeScroll = await Screenshot();
         await Act("scroll", new { deltaX = 0, deltaY = 300 });
+        var afterScroll = await Screenshot();
+        Assert.IsFalse(beforeScroll.AsSpan().SequenceEqual(afterScroll), "Scrolling should change the rendered view.");
 
         using var state = await client.PostAsJsonAsync($"{page}/evaluate", new
         {
@@ -121,6 +124,13 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual("Folio", result.RootElement[0].GetString());
         Assert.AreEqual("End", result.RootElement[1].GetString());
         Assert.AreEqual(300d, result.RootElement[2].GetDouble());
+
+        async Task<byte[]> Screenshot()
+        {
+            using var response = await client.GetAsync($"{page}/screenshot", timeout.Token);
+            if (!response.IsSuccessStatusCode) Assert.Fail(await response.Content.ReadAsStringAsync(timeout.Token));
+            return await response.Content.ReadAsByteArrayAsync(timeout.Token);
+        }
 
         async Task Act(string operation, object body)
         {
