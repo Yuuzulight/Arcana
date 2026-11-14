@@ -16,7 +16,12 @@ public sealed class FolioApiBackendTests
     public async Task FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
-        if (string.IsNullOrWhiteSpace(executable)) Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to a built Folio.ContentHost executable to run the sandboxed Folio API test.");
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
+                Assert.Fail("CI must set ARCANA_TEST_FOLIO_BROKER to the pinned standalone Folio.ContentHost executable.");
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to a built Folio.ContentHost executable to run the sandboxed Folio API test.");
+        }
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         await using var browser = new FolioBrowserBackend(executable!);
         await using var api = new ArcanaApiServer(browser, "folio-test-token");
@@ -26,7 +31,7 @@ public sealed class FolioApiBackendTests
 
         using var createdResponse = await client.PostAsJsonAsync("v1/pages", new
         {
-            html = "<!doctype html><html><head><title>Folio Fixture</title></head><body><button>Folio sandbox fixture</button><script>window.fixtureCount=7</script></body></html>"
+            html = "<!doctype html><html><head><title>Folio Fixture</title></head><body><button>Folio sandbox fixture</button><p id='mutation'>before</p><script>window.fixtureCount=7</script></body></html>"
         }, timeout.Token);
         var createdBody = await createdResponse.Content.ReadAsStringAsync(timeout.Token);
         Assert.AreEqual(HttpStatusCode.Created, createdResponse.StatusCode, createdBody);
@@ -41,9 +46,12 @@ public sealed class FolioApiBackendTests
         StringAssert.Contains(snapshot.RootElement.GetProperty("text").GetString(), "Folio sandbox fixture");
         Assert.AreEqual("button", snapshot.RootElement.GetProperty("elements")[0].GetProperty("tag").GetString());
 
-        using var evaluateResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount++" }, timeout.Token);
+        using var evaluateResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "(()=>{window.fixtureCount++;document.querySelector('#mutation').textContent='DOM mutated '+window.fixtureCount;return window.fixtureCount})()" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, evaluateResponse.StatusCode);
-        Assert.AreEqual(7, await evaluateResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
+        Assert.AreEqual(8, await evaluateResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
+        using var mutatedSnapshotResponse = await client.GetAsync($"v1/pages/{id}/snapshot", timeout.Token);
+        using var mutatedSnapshot = JsonDocument.Parse(await mutatedSnapshotResponse.Content.ReadAsStringAsync(timeout.Token));
+        StringAssert.Contains(mutatedSnapshot.RootElement.GetProperty("text").GetString(), "DOM mutated 8", "The JS side effect must be visible in the real page snapshot.");
         using var sideEffectResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
         Assert.AreEqual(8, await sideEffectResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
 
@@ -67,6 +75,101 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
         using var emptyTabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
         Assert.AreEqual(0, emptyTabs.RootElement.GetArrayLength());
+    }
+
+    [TestMethod]
+    public async Task FolioBrokerRunsDomMutationAndProducesARealRenderedFrame()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer rendering is verified on Windows.");
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
+                Assert.Fail("CI must set ARCANA_TEST_FOLIO_BROKER to the pinned standalone Folio.ContentHost executable.");
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to a built Folio.ContentHost executable to verify rendered-frame evidence.");
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var start = new ProcessStartInfo(Path.GetFullPath(executable!))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("--broker");
+        start.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
+        using var broker = Process.Start(start) ?? throw new InvalidOperationException("Unable to start the standalone Folio broker.");
+        var stderr = broker.StandardError.ReadToEndAsync(timeout.Token);
+        try
+        {
+            using var hello = await BrokerRequestAsync(broker, "hello", new { }, timeout.Token);
+            Assert.IsTrue(hello.RootElement.GetProperty("sandboxed").GetBoolean(), "Folio must confirm that its content worker is sandboxed.");
+            Assert.AreEqual("Folio.ContentHost/native", hello.RootElement.GetProperty("engine").GetProperty("product").GetString());
+            Assert.IsFalse(hello.RootElement.GetProperty("networkEnabled").GetBoolean(), "The qualification fixture must run without network access.");
+
+            using var load = await BrokerRequestAsync(broker, "load", new
+            {
+                urlLabel = "about:blank",
+                html = "<!doctype html><html><body><canvas id='surface' width='80' height='80'></canvas><p id='mutation'>before</p><script>window.count=1;const c=document.querySelector('#surface').getContext('2d');c.fillStyle='#e02030';c.fillRect(0,0,80,80)</script></body></html>"
+            }, timeout.Token);
+            Assert.IsTrue(load.RootElement.GetProperty("rendered").GetBoolean(), "The engine must report a rendered frame.");
+            Assert.IsTrue(load.RootElement.GetProperty("displayItems").GetInt32() > 0, "The frame must contain rendered display items.");
+            Assert.IsTrue(load.RootElement.GetProperty("canvasCommands").GetInt32() > 0, "The fixture must execute native canvas drawing commands.");
+            Assert.IsTrue(load.RootElement.TryGetProperty("canvasFrame", out var canvasFrame), "The broker must return a real content-frame descriptor.");
+            Assert.IsTrue(canvasFrame.GetProperty("sequence").GetInt64() > 0);
+            Assert.IsTrue(canvasFrame.GetProperty("width").GetInt32() > 0 && canvasFrame.GetProperty("height").GetInt32() > 0);
+            var pixelProbe = canvasFrame.GetProperty("pixelProbe");
+            Assert.IsTrue(pixelProbe.GetProperty("changedPixels").GetInt32() > 0, "The read-back frame must contain non-background pixels.");
+
+            using var evaluate = await BrokerRequestAsync(broker, "evaluate", new
+            {
+                expression = "(()=>{window.count++;document.querySelector('#mutation').textContent='DOM mutated '+window.count;return window.count})()"
+            }, timeout.Token);
+            Assert.AreEqual("2", evaluate.RootElement.GetProperty("value").GetString(), "The broker must return the observable JavaScript side effect.");
+            using var snapshot = await BrokerRequestAsync(broker, "snapshot", new { }, timeout.Token);
+            StringAssert.Contains(snapshot.RootElement.GetProperty("snapshot").GetProperty("text").GetString(), "DOM mutated 2");
+        }
+        finally
+        {
+            if (!broker.HasExited)
+            {
+                try { _ = await BrokerRequestAsync(broker, "close", new { }, timeout.Token); }
+                catch { broker.Kill(entireProcessTree: true); }
+                if (!broker.HasExited) await broker.WaitForExitAsync(CancellationToken.None);
+            }
+        }
+        Assert.AreEqual(0, broker.ExitCode, "Folio broker exited with an error: " + await stderr);
+    }
+
+    private static async Task<JsonDocument> BrokerRequestAsync(Process broker, string operation, object payload, CancellationToken cancellationToken)
+    {
+        var requestId = Guid.NewGuid().ToString("N");
+        var fields = new Dictionary<string, object?>
+        {
+            ["id"] = requestId,
+            ["op"] = operation
+        };
+        foreach (var property in payload.GetType().GetProperties()) fields[property.Name] = property.GetValue(payload);
+        var request = JsonSerializer.Serialize(fields);
+        await broker.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken);
+        await broker.StandardInput.FlushAsync(cancellationToken);
+        var line = await broker.StandardOutput.ReadLineAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Folio broker closed stdout without a response: " + await broker.StandardError.ReadToEndAsync(cancellationToken));
+        var response = JsonDocument.Parse(line);
+        if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != requestId)
+        {
+            response.Dispose();
+            throw new InvalidDataException("Folio broker returned a response for a different qualification request.");
+        }
+        if (response.RootElement.GetProperty("ok").ValueKind != JsonValueKind.True)
+        {
+            var details = response.RootElement.GetProperty("error").GetProperty("message").GetString();
+            response.Dispose();
+            throw new InvalidOperationException($"Folio broker {operation} failed: {details}");
+        }
+        return response;
     }
 
     [TestMethod]
