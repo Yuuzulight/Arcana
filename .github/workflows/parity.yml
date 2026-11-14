@@ -13,6 +13,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Check out pinned Folio source without persisted credentials
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: Yuuzulight/Folio
+          ref: bbe3de574921f5741f761886d85d980a5a1abfd8
+          path: folio-source
+          persist-credentials: false
       - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 10.0.x
@@ -28,11 +35,57 @@ jobs:
         run: ./tools/fetch-engine.ps1
       - name: Build
         run: dotnet build Arcana.slnx --configuration Release
-      - name: Run policy, transport, CLI, MCP, and page parity tests
+      - name: Publish standalone Folio production broker
+        shell: pwsh
+        run: |
+          $brokerDirectory = Join-Path $pwd 'folio-source/artifacts/folio-broker-aot-check'
+          pwsh -NoProfile -File ./folio-source/tools/publish-content-host.ps1 -Destination $brokerDirectory -Runtime win-x64
+          $manifestPath = Join-Path $brokerDirectory 'native-build.json'
+          if (-not (Test-Path $manifestPath)) { throw 'Folio production publish did not produce its build manifest.' }
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -ne 'bbe3de574921f5741f761886d85d980a5a1abfd8' -or $manifest.sourceDirty) { throw 'Folio production publish source provenance did not match the pinned commit.' }
+          if (-not (Test-Path (Join-Path $brokerDirectory 'Folio.ContentHost.exe'))) { throw 'Standalone Folio broker executable is missing.' }
+          Get-Content $manifestPath
+      - name: Run mandatory real Folio broker qualification
+        shell: pwsh
+        run: |
+          $env:ARCANA_TEST_FOLIO_BROKER = Join-Path $pwd 'folio-source/artifacts/folio-broker-aot-check/Folio.ContentHost.exe'
+          $env:ARCANA_TEST_ARCANA_CLI = Join-Path $pwd 'src/Arcana.Cli/bin/Release/net10.0/Arcana.Cli.dll'
+          $results = Join-Path $pwd 'artifacts/folio-qualification-results'
+          New-Item -ItemType Directory -Path $results -Force | Out-Null
+          dotnet test tests/Arcana.Runtime.Tests/Arcana.Runtime.Tests.csproj --configuration Release --no-build --filter 'FullyQualifiedName~FolioApiBackendTests' --logger 'trx;LogFileName=folio-api-qualification.trx' --results-directory $results
+          if ($LASTEXITCODE -ne 0) { throw 'Arcana real Folio broker qualification tests failed.' }
+          $trxPath = Join-Path $results 'folio-api-qualification.trx'
+          if (-not (Test-Path $trxPath)) { throw 'Qualification TRX file was not produced.' }
+          [xml]$trx = Get-Content $trxPath -Raw
+          $testResults = @($trx.SelectNodes("//*[local-name()='UnitTestResult']"))
+          $requiredTests = @(
+            'FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations',
+            'FolioBrokerRunsDomMutationAndProducesARealRenderedFrame',
+            'ArcanaHostExitReleasesBrokerAndSandboxWorker'
+          )
+          foreach ($expected in $requiredTests) {
+            $matches = @($testResults | Where-Object { $_.testName -like "*$expected" })
+            if ($matches.Count -ne 1 -or $matches[0].outcome -ne 'Passed') {
+              throw "Expected qualification test '$expected' exactly once with Passed outcome; observed $($matches.Count) result(s): $(($matches | ForEach-Object { $_.outcome }) -join ', ')."
+            }
+          }
+          if ($testResults.Count -ne $requiredTests.Count) { throw "Expected exactly $($requiredTests.Count) qualification tests but TRX contains $($testResults.Count)." }
+          Get-Content $trxPath
+      - name: Run policy, transport, CLI, MCP, page parity, and real Folio tests
         shell: pwsh
         run: |
           $env:ARCANA_TEST_ENGINE = Join-Path $pwd 'engines/obscura/current/obscura.exe'
+          $env:ARCANA_TEST_FOLIO_BROKER = Join-Path $pwd 'folio-source/artifacts/folio-broker-aot-check/Folio.ContentHost.exe'
+          $env:ARCANA_TEST_ARCANA_CLI = Join-Path $pwd 'src/Arcana.Cli/bin/Release/net10.0/Arcana.Cli.dll'
           dotnet test Arcana.slnx --configuration Release --no-build --logger "trx;LogFileName=parity.trx"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: folio-production-qualification
+          path: |
+            artifacts/folio-qualification-results/*.trx
+            folio-source/artifacts/folio-broker-aot-check/native-build.json
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
