@@ -14,6 +14,10 @@ The earlier managed `FolioBrowserBackend` prototype was not a real Folio browser
 | Unsupported operations | Navigation, actions, screenshots, cookies, storage, CDP, and event/log subscriptions return HTTP 501. | These operations must not be described as implemented. |
 | Obscura contract | Existing pinned-engine contract and SPA regression tests remain enabled. | Passing Obscura tests is not Folio qualification. |
 
+## Windows CI smoke
+
+The Windows workflow checks out Folio at pinned commit `bbe3de574921f5741f761886d85d980a5a1abfd8`, publishes its standalone `win-x64` production host, and runs the Arcana integration tests against that executable. The gate requires an observable JavaScript DOM mutation, a rendered frame with non-background pixel evidence, and broker/worker cleanup; it validates the TRX results so missing or skipped tests fail CI. The workflow also uploads the Folio build manifest and qualification TRX. This gate covers the current offline inline-fixture slice only.
+
 ## Still required for M5
 
 - A brokered and policy-controlled resource path for local fixtures and web navigation.
