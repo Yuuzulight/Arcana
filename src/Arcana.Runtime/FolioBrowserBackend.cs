@@ -176,7 +176,20 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
         public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default) => Unsupported<PageStorageState>("storage");
         public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default) => Unsupported("storage");
-        public Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default) => Unsupported<byte[]>("screenshot");
+        public async Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
+        {
+            if (format != "png") throw new NotSupportedException("The Folio broker supports PNG screenshots.");
+
+            using var response = await _broker.RequestAsync("screenshot", new { }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            var payload = response.RootElement;
+            if (!payload.TryGetProperty("mimeType", out var mimeType) || mimeType.ValueKind != JsonValueKind.String || mimeType.GetString() != "image/png" ||
+                !payload.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.String || !data.TryGetBytesFromBase64(out var bytes) ||
+                !bytes.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+                throw new InvalidOperationException("Folio broker returned an invalid PNG screenshot.");
+
+            return bytes;
+        }
         public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
         public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
