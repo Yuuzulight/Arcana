@@ -19,6 +19,7 @@ public interface IArcanaEventSubscription : IDisposable
 /// <summary>Page operations exposed by the versioned API transport.</summary>
 public interface IArcanaPageBackend
 {
+    string? CurrentUrl => null;
     Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default);
     Task SetContentAsync(string html, CancellationToken cancellationToken = default);
     Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default);

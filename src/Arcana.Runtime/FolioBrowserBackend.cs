@@ -103,6 +103,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         public event Action? Closed;
         public string Url { get; private set; }
+        public string CurrentUrl => Url;
         public string Title { get; private set; } = "";
 
         public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string url, CancellationToken cancellationToken)

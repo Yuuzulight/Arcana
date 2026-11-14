@@ -117,6 +117,7 @@ public sealed class FolioApiBackendTests
         var json = await response.Content.ReadAsStringAsync(timeout.Token);
         Assert.AreEqual(HttpStatusCode.Created, response.StatusCode, json);
         using var page = JsonDocument.Parse(json);
+        Assert.AreEqual(expectedUrl, page.RootElement.GetProperty("url").GetString());
         using var snapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}/snapshot", timeout.Token));
         var root = snapshot.RootElement;
         Assert.AreEqual(expectedUrl, root.GetProperty("url").GetString());

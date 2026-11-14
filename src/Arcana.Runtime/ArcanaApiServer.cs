@@ -139,7 +139,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         var id = Guid.NewGuid().ToString("N");
         _pages[id] = page;
         StartLogCapture(id, page);
-        await JsonAsync(context.Response, 201, new { pageId = id, url = body?.Url ?? "about:blank" });
+        await JsonAsync(context.Response, 201, new { pageId = id, url = page.CurrentUrl ?? body?.Url ?? "about:blank" });
     }
 
     private async Task RestoreCookiesAsync(IArcanaPageBackend page, CancellationToken cancellationToken)
