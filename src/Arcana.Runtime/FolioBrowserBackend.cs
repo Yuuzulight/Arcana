@@ -470,6 +470,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 EnsureSuccess(hello);
                 if (!hello.RootElement.TryGetProperty("sandboxed", out var sandboxed) || sandboxed.ValueKind != JsonValueKind.True)
                     throw new InvalidOperationException("Folio broker did not confirm its sandboxed content process.");
+                var networkEnabled = hello.RootElement.TryGetProperty("networkEnabled", out var network) && network.ValueKind == JsonValueKind.True;
+                if (networkEnabled != (allowedOrigins.Length > 0))
+                    throw new InvalidOperationException("Folio broker did not confirm the requested network policy.");
                 return connection;
             }
             catch
