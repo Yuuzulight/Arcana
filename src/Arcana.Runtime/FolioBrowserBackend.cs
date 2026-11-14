@@ -68,6 +68,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         return Task.FromResult(tabs);
     }
 
+    internal int GetBrokerProcessId(string tabId) => _pages[tabId].BrokerProcessId;
+
     public async Task<IArcanaPageBackend> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -120,6 +122,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         private sealed record NavigationEntry(string Url, string? Html = null);
         private bool _closed;
+
+        internal int BrokerProcessId => _broker.ProcessId;
 
         private FolioPageBackend(BrokerConnection broker, bool navigationEnabled)
         {
@@ -440,7 +444,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
     }
 
-    private sealed class BrokerConnection : IAsyncDisposable
+    internal sealed class BrokerConnection : IAsyncDisposable
     {
         private const int MaxResponseChars = 2 * 1024 * 1024;
         // The 1280 Ã— 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
@@ -458,6 +462,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             _reader = new BoundedLineReader(process.StandardOutput);
             _ = process.StandardError.ReadToEndAsync();
         }
+
+        internal int ProcessId => _process.Id;
 
         public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken)
         {
@@ -542,6 +548,12 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         public async Task<JsonElement> CloseAsync(CancellationToken cancellationToken)
         {
+            if (Volatile.Read(ref _terminated) != 0 || _process.HasExited)
+            {
+                await DisposeAsync().ConfigureAwait(false);
+                return JsonSerializer.SerializeToElement(new { ok = true });
+            }
+
             using var response = await RequestAsync("close", new { }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             var result = response.RootElement.Clone();
@@ -570,7 +582,6 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             }
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
-            _process.Dispose();
         }
 
         private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins)

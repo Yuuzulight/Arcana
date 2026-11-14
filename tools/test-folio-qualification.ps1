@@ -41,6 +41,8 @@ try {
     $required = @(
         'FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations'
         'FolioPageRemainsUsableAfterAPreCanceledRequest'
+        'FolioConnectionClosesAfterBrokerProcessExits'
+        'FolioApiDeletesTheTabAfterItsBrokerExits'
         'FolioNavigationRefusesAnUnlistedOriginAndRetiresThePage'
         'FolioNavigationLoadsTheAllowedHttpsDocument'
         'FolioNavigationRefusesARedirectOutsideTheAllowedPath'

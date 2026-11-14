@@ -13,6 +13,52 @@ namespace Arcana.Runtime.Tests;
 public sealed class FolioApiBackendTests
 {
     [TestMethod]
+    public async Task FolioApiDeletesTheTabAfterItsBrokerExits()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the tab cleanup regression.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var browser = new FolioBrowserBackend(executable!);
+        await using var api = new ArcanaApiServer(browser, "broker-exit-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "broker-exit-token");
+        using var created = await client.PostAsJsonAsync("v1/pages", new { }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+        using var page = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
+        var pageId = page.RootElement.GetProperty("pageId").GetString();
+        var tab = (await browser.GetTabsAsync(timeout.Token)).Single();
+        using var process = Process.GetProcessById(browser.GetBrokerProcessId(tab.TargetId));
+        process.Kill(entireProcessTree: true);
+        await process.WaitForExitAsync(timeout.Token);
+
+        using var deleted = await client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
+        using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
+        Assert.AreEqual(0, tabs.RootElement.GetArrayLength());
+        using var snapshot = await client.GetAsync($"v1/pages/{pageId}/snapshot", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NotFound, snapshot.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task FolioConnectionClosesAfterBrokerProcessExits()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the broker-exit regression.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var connection = await FolioBrowserBackend.BrokerConnection.StartAsync(executable!, [], timeout.Token);
+        using var process = Process.GetProcessById(connection.ProcessId);
+        process.Kill(entireProcessTree: true);
+        await process.WaitForExitAsync(timeout.Token);
+        var result = await connection.CloseAsync(timeout.Token);
+        Assert.IsTrue(result.GetProperty("ok").GetBoolean());
+    }
+
+    [TestMethod]
     public async Task FolioPageRemainsUsableAfterAPreCanceledRequest()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
