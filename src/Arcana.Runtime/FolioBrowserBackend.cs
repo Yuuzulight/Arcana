@@ -68,6 +68,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         return Task.FromResult(tabs);
     }
 
+    internal int GetBrokerProcessId(string tabId) => _pages[tabId].BrokerProcessId;
+
     public async Task<IArcanaPageBackend> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -120,6 +122,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         private sealed record NavigationEntry(string Url, string? Html = null);
         private bool _closed;
+
+        internal int BrokerProcessId => _broker.ProcessId;
 
         private FolioPageBackend(BrokerConnection broker, bool navigationEnabled)
         {

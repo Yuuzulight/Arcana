@@ -42,6 +42,7 @@ try {
         'FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations'
         'FolioPageRemainsUsableAfterAPreCanceledRequest'
         'FolioConnectionClosesAfterBrokerProcessExits'
+        'FolioApiDeletesTheTabAfterItsBrokerExits'
         'FolioNavigationRefusesAnUnlistedOriginAndRetiresThePage'
         'FolioNavigationLoadsTheAllowedHttpsDocument'
         'FolioNavigationRefusesARedirectOutsideTheAllowedPath'
