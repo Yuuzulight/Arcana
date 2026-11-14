@@ -291,7 +291,18 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (WebSocketException) { }
-        finally { events.Dispose(); try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None); } catch { } socket.Dispose(); }
+        finally
+        {
+            using (socket)
+            using (var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                try
+                {
+                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "closed", closeTimeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
+            }
+        }
     }
 
     private bool Authorize(HttpListenerRequest request)
