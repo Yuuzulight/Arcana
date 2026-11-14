@@ -40,6 +40,7 @@ try {
     [xml]$trx = Get-Content -LiteralPath $trxPath -Raw
     $required = @(
         'FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations'
+        'FolioPageRemainsUsableAfterAPreCanceledRequest'
         'FolioNavigationRefusesAnUnlistedOriginAndRetiresThePage'
         'FolioNavigationLoadsTheAllowedHttpsDocument'
         'FolioNavigationRefusesARedirectOutsideTheAllowedPath'

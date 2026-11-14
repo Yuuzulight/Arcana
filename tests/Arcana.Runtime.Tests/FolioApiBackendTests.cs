@@ -13,6 +13,31 @@ namespace Arcana.Runtime.Tests;
 public sealed class FolioApiBackendTests
 {
     [TestMethod]
+    public async Task FolioPageRemainsUsableAfterAPreCanceledRequest()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the cancellation regression.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var browser = new FolioBrowserBackend(executable!);
+        var page = await browser.NewPageAsync(cancellationToken: timeout.Token);
+        var canceled = new CancellationToken(canceled: true);
+        try
+        {
+            await page.EvaluateAsync("1", canceled);
+            Assert.Fail("The canceled request should throw.");
+        }
+        catch (OperationCanceledException)
+        {
+            // The request was canceled before it reached the broker.
+        }
+
+        var result = await page.EvaluateAsync("21 * 2", timeout.Token);
+        Assert.AreEqual(42, result.GetInt32());
+    }
+
+    [TestMethod]
     public async Task FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
