@@ -72,6 +72,35 @@ public sealed class ApiServerTests
         private static Task<T> Unsupported<T>() => Task.FromException<T>(new NotSupportedException());
     }
 
+    [TestMethod]
+    public async Task ApiShutdownDoesNotWaitForAnIdleWebSocketClient()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var context = await ApiTestContext.CreateAsync(timeout.Token);
+        if (context.UseExternalEndpoint)
+        {
+            await context.DisposeAsync();
+            Assert.Inconclusive("This test owns and shuts down a local Arcana API server.");
+        }
+
+        ClientWebSocket? socket = null;
+        Task? shutdown = null;
+        try
+        {
+            using var created = await context.Client.PostAsJsonAsync("v1/pages", new { }, timeout.Token);
+            created.EnsureSuccessStatusCode();
+            using var page = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
+            socket = await context.ConnectWebSocketAsync(page.RootElement.GetProperty("pageId").GetString()!, timeout.Token);
+            shutdown = context.DisposeAsync().AsTask();
+            await shutdown.WaitAsync(TimeSpan.FromSeconds(8), timeout.Token);
+        }
+        finally
+        {
+            socket?.Dispose();
+            await (shutdown ?? context.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(8));
+        }
+    }
+
     private sealed class ApiTestContext : IAsyncDisposable
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
