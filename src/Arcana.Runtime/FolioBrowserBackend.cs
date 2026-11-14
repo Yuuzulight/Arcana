@@ -570,7 +570,6 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             }
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
-            _process.Dispose();
         }
 
         private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins)
