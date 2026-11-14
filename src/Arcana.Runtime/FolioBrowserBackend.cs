@@ -229,6 +229,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     private sealed class BrokerConnection : IAsyncDisposable
     {
         private const int MaxResponseChars = 2 * 1024 * 1024;
+        // The 1280 × 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
+        private const int MaxScreenshotResponseChars = 8 * 1024 * 1024;
         private readonly Process _process;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private readonly BoundedLineReader _reader;
@@ -285,7 +287,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 var request = JsonSerializer.Serialize(fields, JsonOptions);
                 await _process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
                 await _process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
-                var line = await _reader.ReadLineAsync(MaxResponseChars, timeout.Token).ConfigureAwait(false)
+                var responseLimit = operation == "screenshot" ? MaxScreenshotResponseChars : MaxResponseChars;
+                var line = await _reader.ReadLineAsync(responseLimit, timeout.Token).ConfigureAwait(false)
                     ?? throw new IOException("Folio broker closed its response stream.");
                 var response = JsonDocument.Parse(line);
                 if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != id)
