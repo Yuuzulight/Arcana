@@ -13,6 +13,31 @@ namespace Arcana.Runtime.Tests;
 public sealed class FolioApiBackendTests
 {
     [TestMethod]
+    public async Task FolioPageRemainsUsableAfterAPreCanceledRequest()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the cancellation regression.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var browser = new FolioBrowserBackend(executable!);
+        var page = await browser.NewPageAsync(cancellationToken: timeout.Token);
+        var canceled = new CancellationToken(canceled: true);
+        try
+        {
+            await page.EvaluateAsync("1", canceled);
+            Assert.Fail("The canceled request should throw.");
+        }
+        catch (OperationCanceledException)
+        {
+            // The request was canceled before it reached the broker.
+        }
+
+        var result = await page.EvaluateAsync("21 * 2", timeout.Token);
+        Assert.AreEqual(42, result.GetInt32());
+    }
+
+    [TestMethod]
     public async Task FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
@@ -47,6 +72,11 @@ public sealed class FolioApiBackendTests
         using var sideEffectResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
         Assert.AreEqual(8, await sideEffectResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
 
+        var previousReference = snapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
+        Assert.IsFalse(string.IsNullOrWhiteSpace(previousReference));
+        using var sameDocument = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
+        Assert.AreEqual(previousReference, sameDocument.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
+
         using var reloaded = await client.PostAsJsonAsync($"v1/pages/{id}/reload", new { }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, reloaded.StatusCode, await reloaded.Content.ReadAsStringAsync(timeout.Token));
         using var resetState = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
@@ -69,8 +99,10 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
         using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedLogs.StatusCode);
-        using var unsupportedClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = "e1" }, timeout.Token);
-        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedClick.StatusCode);
+        using var newSnapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
+        Assert.AreNotEqual(previousReference, newSnapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
+        using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = previousReference }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Conflict, staleClick.StatusCode);
 
         using var failedCreate = await client.PostAsJsonAsync("v1/pages", new { url = "https://example.com" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, failedCreate.StatusCode);
@@ -190,6 +222,50 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioNavigationDoesNotExposeStorageFromAnotherOrigin()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
+            Assert.Inconclusive("Set the navigation broker and ARCANA_TEST_FOLIO_LIVE_WEB=1 to run the public HTTPS fixtures.");
+
+        const string firstOrigin = "https://example.com";
+        const string secondOrigin = "https://httpbingo.org";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, [firstOrigin, secondOrigin]);
+        await using var api = new ArcanaApiServer(browser, "folio-storage-test");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-storage-test");
+
+        using var created = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        var pageJson = await created.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, pageJson);
+        using var page = JsonDocument.Parse(pageJson);
+        var route = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
+        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test')]";
+        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        var before = await Evaluate(readStorage);
+        Assert.AreEqual(firstOrigin, before[0].GetString());
+        Assert.AreEqual("local", before[1].GetString());
+        Assert.AreEqual("session", before[2].GetString());
+
+        using var navigated = await client.PostAsJsonAsync($"{route}/navigate", new { url = secondOrigin + "/html" }, timeout.Token);
+        Assert.IsTrue(navigated.IsSuccessStatusCode, await navigated.Content.ReadAsStringAsync(timeout.Token));
+        var after = await Evaluate(readStorage);
+        Assert.AreEqual(secondOrigin, after[0].GetString());
+        Assert.AreEqual(JsonValueKind.Null, after[1].ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, after[2].ValueKind);
+
+        async Task<JsonElement> Evaluate(string expression)
+        {
+            using var response = await client.PostAsJsonAsync($"{route}/evaluate", new { expression }, timeout.Token);
+            var json = await response.Content.ReadAsStringAsync(timeout.Token);
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
+            return JsonSerializer.Deserialize<JsonElement>(json);
+        }
+    }
+
+    [TestMethod]
     public async Task FolioNavigationRunsARelativeExternalScript()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
@@ -253,6 +329,179 @@ public sealed class FolioApiBackendTests
                 await host.WaitForExitAsync();
             }
         }
+    }
+
+    [TestMethod]
+    public async Task FolioApiForwardsPointerKeyboardTextAndWheelToDocument()
+    {
+        var broker = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_INPUT_BROKER");
+        if (string.IsNullOrWhiteSpace(broker)) Assert.Inconclusive("An input-enabled Folio broker is required.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(broker!);
+        await using var api = new ArcanaApiServer(browser, "folio-input-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-input-token");
+
+        using var created = await client.PostAsJsonAsync("v1/pages", new
+        {
+            html = """
+                <body style="margin:0">
+                <div id="scroller" style="height:200px;overflow:auto"><div style="height:2000px">
+                <input id="field" style="width:200px;height:40px">
+                <select id="choice"><option value="a">First</option><option value="b">Second</option></select>
+                <script>
+                window.changes = [];
+                document.body.addEventListener("change", e => window.changes.push(e.target.value));
+                window.presses = ""; window.wheelDelta = 0;
+                document.getElementById("scroller").addEventListener("wheel", e => window.wheelDelta = e.deltaY);
+                document.getElementById("field").addEventListener("keydown", e => window.presses = e.key);
+                </script>
+                </div></div></body>
+                """
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, await created.Content.ReadAsStringAsync(timeout.Token));
+        using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
+        var page = $"v1/pages/{document.RootElement.GetProperty("pageId").GetString()}";
+
+        using var controls = JsonDocument.Parse(await client.GetStringAsync($"{page}/snapshot", timeout.Token));
+        var reference = controls.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
+        await Act("click", new { @ref = reference });
+        await Act("type", new { value = "Folio" });
+        await Act("press", new { key = "End" });
+        using var typed = await client.PostAsJsonAsync($"{page}/evaluate",
+            new { expression = "document.getElementById('field').value" }, timeout.Token);
+        typed.EnsureSuccessStatusCode();
+        Assert.AreEqual("Folio", await typed.Content.ReadFromJsonAsync<string>(cancellationToken: timeout.Token));
+        var choice = controls.RootElement.GetProperty("elements")[1].GetProperty("reference").GetString();
+        await Act("fill", new { @ref = reference, value = "Filled" });
+        await Act("select", new { @ref = choice, value = "Second" });
+        var beforeScroll = await Screenshot();
+        await Act("scroll", new { deltaX = 0, deltaY = 300 });
+        var afterScroll = await Screenshot();
+        Assert.IsFalse(beforeScroll.AsSpan().SequenceEqual(afterScroll), "Scrolling should change the rendered view.");
+
+        using var state = await client.PostAsJsonAsync($"{page}/evaluate", new
+        {
+            expression = "[document.getElementById('field').value, window.presses, window.wheelDelta, document.getElementById('scroller').scrollTop, document.getElementById('choice').value, window.changes]"
+        }, timeout.Token);
+        Assert.IsTrue(state.IsSuccessStatusCode, await state.Content.ReadAsStringAsync(timeout.Token));
+        using var result = JsonDocument.Parse(await state.Content.ReadAsStringAsync(timeout.Token));
+        Assert.AreEqual("Filled", result.RootElement[0].GetString());
+        Assert.AreEqual("End", result.RootElement[1].GetString());
+        Assert.AreEqual(300d, result.RootElement[2].GetDouble());
+        Assert.AreEqual(300d, result.RootElement[3].GetDouble());
+        Assert.AreEqual("b", result.RootElement[4].GetString());
+        Assert.AreEqual("Filled", result.RootElement[5][0].GetString());
+        Assert.AreEqual("b", result.RootElement[5][1].GetString());
+
+        async Task<byte[]> Screenshot()
+        {
+            using var response = await client.GetAsync($"{page}/screenshot", timeout.Token);
+            if (!response.IsSuccessStatusCode) Assert.Fail(await response.Content.ReadAsStringAsync(timeout.Token));
+            return await response.Content.ReadAsByteArrayAsync(timeout.Token);
+        }
+
+        async Task Act(string operation, object body)
+        {
+            using var response = await client.PostAsJsonAsync($"{page}/{operation}", body, timeout.Token);
+            Assert.IsTrue(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(timeout.Token));
+        }
+    }
+
+    [TestMethod]
+    public async Task FolioBrokerRunsDomMutationAndProducesARealRenderedFrame()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer rendering is verified on Windows.");
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
+                Assert.Fail("CI must set ARCANA_TEST_FOLIO_BROKER to the pinned standalone Folio.ContentHost executable.");
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to a built Folio.ContentHost executable to verify rendered-frame evidence.");
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var start = new ProcessStartInfo(Path.GetFullPath(executable!))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("--broker");
+        start.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
+        using var broker = Process.Start(start) ?? throw new InvalidOperationException("Unable to start the standalone Folio broker.");
+        var stderr = broker.StandardError.ReadToEndAsync(timeout.Token);
+        try
+        {
+            using var hello = await BrokerRequestAsync(broker, "hello", new { }, timeout.Token);
+            Assert.IsTrue(hello.RootElement.GetProperty("sandboxed").GetBoolean(), "Folio must confirm that its content worker is sandboxed.");
+            Assert.AreEqual("Folio.ContentHost/native", hello.RootElement.GetProperty("engine").GetProperty("product").GetString());
+            Assert.IsFalse(hello.RootElement.GetProperty("networkEnabled").GetBoolean(), "The qualification fixture must run without network access.");
+
+            using var load = await BrokerRequestAsync(broker, "load", new
+            {
+                urlLabel = "about:blank",
+                html = "<!doctype html><html><body><canvas id='surface' width='80' height='80'></canvas><p id='mutation'>before</p><script>window.count=1;const c=document.querySelector('#surface').getContext('2d');c.fillStyle='#e02030';c.fillRect(0,0,80,80)</script></body></html>"
+            }, timeout.Token);
+            Assert.IsTrue(load.RootElement.GetProperty("rendered").GetBoolean(), "The engine must report a rendered frame.");
+            Assert.IsTrue(load.RootElement.GetProperty("displayItems").GetInt32() > 0, "The frame must contain rendered display items.");
+            Assert.IsTrue(load.RootElement.GetProperty("canvasCommands").GetInt32() > 0, "The fixture must execute native canvas drawing commands.");
+            Assert.IsTrue(load.RootElement.TryGetProperty("canvasFrame", out var canvasFrame), "The broker must return a real content-frame descriptor.");
+            Assert.IsTrue(canvasFrame.GetProperty("sequence").GetInt64() > 0);
+            Assert.IsTrue(canvasFrame.GetProperty("width").GetInt32() > 0 && canvasFrame.GetProperty("height").GetInt32() > 0);
+            var pixelProbe = canvasFrame.GetProperty("pixelProbe");
+            Assert.IsTrue(pixelProbe.GetProperty("changedPixels").GetInt32() > 0, "The read-back frame must contain non-background pixels.");
+
+            using var evaluate = await BrokerRequestAsync(broker, "evaluate", new
+            {
+                expression = "(()=>{window.count++;document.querySelector('#mutation').textContent='DOM mutated '+window.count;return window.count})()"
+            }, timeout.Token);
+            Assert.AreEqual("2", evaluate.RootElement.GetProperty("value").GetString(), "The broker must return the observable JavaScript side effect.");
+            using var snapshot = await BrokerRequestAsync(broker, "snapshot", new { }, timeout.Token);
+            StringAssert.Contains(snapshot.RootElement.GetProperty("snapshot").GetProperty("text").GetString(), "DOM mutated 2");
+        }
+        finally
+        {
+            if (!broker.HasExited)
+            {
+                try { _ = await BrokerRequestAsync(broker, "close", new { }, timeout.Token); }
+                catch { broker.Kill(entireProcessTree: true); }
+                if (!broker.HasExited) await broker.WaitForExitAsync(CancellationToken.None);
+            }
+        }
+        Assert.AreEqual(0, broker.ExitCode, "Folio broker exited with an error: " + await stderr);
+    }
+
+    private static async Task<JsonDocument> BrokerRequestAsync(Process broker, string operation, object payload, CancellationToken cancellationToken)
+    {
+        var requestId = Guid.NewGuid().ToString("N");
+        var fields = new Dictionary<string, object?>
+        {
+            ["id"] = requestId,
+            ["op"] = operation
+        };
+        foreach (var property in payload.GetType().GetProperties()) fields[property.Name] = property.GetValue(payload);
+        var request = JsonSerializer.Serialize(fields);
+        await broker.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken);
+        await broker.StandardInput.FlushAsync(cancellationToken);
+        var line = await broker.StandardOutput.ReadLineAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Folio broker closed stdout without a response: " + await broker.StandardError.ReadToEndAsync(cancellationToken));
+        var response = JsonDocument.Parse(line);
+        if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != requestId)
+        {
+            response.Dispose();
+            throw new InvalidDataException("Folio broker returned a response for a different qualification request.");
+        }
+        if (response.RootElement.GetProperty("ok").ValueKind != JsonValueKind.True)
+        {
+            var details = response.RootElement.GetProperty("error").GetProperty("message").GetString();
+            response.Dispose();
+            throw new InvalidOperationException($"Folio broker {operation} failed: {details}");
+        }
+        return response;
     }
 
     [TestMethod]

@@ -32,9 +32,15 @@ jobs:
         shell: pwsh
         run: |
           $env:ARCANA_TEST_ENGINE = Join-Path $pwd 'engines/obscura/current/obscura.exe'
-          dotnet test Arcana.slnx --configuration Release --no-build --logger "trx;LogFileName=parity.trx"
+          dotnet test Arcana.slnx --configuration Release --no-build --filter "FullyQualifiedName!~FolioApiBackendTests" --logger "trx;LogFileName=parity.trx"
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: parity-results
           path: '**/TestResults/*.trx'
+
+  combined-folio:
+    if: vars.ARCANA_FOLIO_QUALIFICATION_COMMIT != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: ./.github/workflows/folio-qualification.yml
+    with:
+      folio_commit: ${{ vars.ARCANA_FOLIO_QUALIFICATION_COMMIT }}

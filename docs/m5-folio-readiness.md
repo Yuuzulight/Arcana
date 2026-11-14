@@ -16,6 +16,18 @@ The earlier managed `FolioBrowserBackend` prototype was not a real Folio browser
 | Unsupported operations | Page actions, cookies, storage, CDP, and event/log subscriptions return HTTP 501 on this branch. | The input adapter is tracked in [#30](https://github.com/Yuuzulight/Arcana/pull/30). |
 | Obscura contract | Existing pinned-engine contract and SPA regression tests remain enabled. | Passing Obscura tests is not Folio qualification. |
 
+## Combined Windows qualification
+
+Run this from the Arcana checkout with a Folio broker that includes both HTTPS navigation and input:
+
+```powershell
+pwsh -NoProfile -File tools/test-folio-qualification.ps1 -Broker C:/path/to/Folio.ContentHost.exe
+```
+
+The command uses the same executable for all eleven required Folio integration tests. It exercises public HTTPS fixtures and records the Arcana revision, broker SHA-256, and test outcomes under `artifacts/folio-qualification`. A missing or skipped result fails qualification.
+
+For hosted CI, set the Arcana repository variable `ARCANA_FOLIO_QUALIFICATION_COMMIT` to the full Folio commit SHA. A subsequent push on the combined Arcana branch or a same-repository pull request runs the job. Windows CI builds the pinned broker and uploads the Folio build manifest alongside the Arcana results. A skipped job leaves single-broker qualification open. See [#33](https://github.com/Yuuzulight/Arcana/issues/33).
+
 ## Still required for M5
 
 - Browser actions, cookies/storage, and event/log support with explicit real-engine evidence.
