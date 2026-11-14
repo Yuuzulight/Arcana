@@ -110,6 +110,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         private readonly SemaphoreSlim _navigationGate = new(1, 1);
         private readonly List<NavigationEntry> _history = [];
         private int _historyIndex = -1;
+        private string _referencePrefix = Guid.NewGuid().ToString("N") + ":";
 
         private sealed record NavigationEntry(string Url, string? Html = null);
         private bool _closed;
@@ -152,21 +153,30 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             using var response = await _broker.RequestAsync("load", new { html, urlLabel = "about:blank" }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
+            _referencePrefix = Guid.NewGuid().ToString("N") + ":";
             Url = "about:blank";
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default)
         {
-            using var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
-            EnsureSuccess(response);
-            if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
-                throw new InvalidOperationException("Folio broker did not return a page snapshot.");
-            var pageSnapshot = snapshot.Deserialize<PageSnapshot>(JsonOptions)
-                ?? throw new InvalidOperationException("Folio broker returned an invalid page snapshot.");
-            Url = pageSnapshot.Url;
-            Title = pageSnapshot.Title;
-            return pageSnapshot;
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                using var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
+                if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
+                    throw new InvalidOperationException("Folio broker did not return a page snapshot.");
+                var pageSnapshot = snapshot.Deserialize<PageSnapshot>(JsonOptions)
+                    ?? throw new InvalidOperationException("Folio broker returned an invalid page snapshot.");
+                Url = pageSnapshot.Url;
+                Title = pageSnapshot.Title;
+                return pageSnapshot with
+                {
+                    Elements = pageSnapshot.Elements.Select(element => element with { Reference = _referencePrefix + element.Reference }).ToArray()
+                };
+            }
+            finally { _navigationGate.Release(); }
         }
 
         private async Task UpdateSnapshotMetadataAsync(CancellationToken cancellationToken)
@@ -228,6 +238,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
             using var response = await _broker.RequestAsync("navigate", new { url }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
+            _referencePrefix = Guid.NewGuid().ToString("N") + ":";
             Url = response.RootElement.GetProperty("url").GetString() ?? url;
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -317,58 +328,76 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
         public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
         {
-            var bounds = await RunReferenceActionAsync(reference, """
-                const rect = element.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
-                """, cancellationToken).ConfigureAwait(false);
-            if (bounds.GetArrayLength() != 2)
-                throw new InvalidOperationException("The referenced element has no clickable bounds.");
-            await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var bounds = await RunReferenceActionAsync(reference, """
+                    const rect = element.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
+                    """, cancellationToken).ConfigureAwait(false);
+                if (bounds.GetArrayLength() != 2)
+                    throw new InvalidOperationException("The referenced element has no clickable bounds.");
+                await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+            }
+            finally { _navigationGate.Release(); }
         }
 
         public async Task FillAsync(string reference, string value, CancellationToken cancellationToken = default)
         {
-            ArgumentNullException.ThrowIfNull(value);
-            await RunReferenceActionAsync(reference, $$"""
-                if (element.readOnly || element.hasAttribute('readonly')) throw new Error('Element is read-only.');
-                const value = {{JsonSerializer.Serialize(value)}};
-                if (element.tagName === 'TEXTAREA' || (element.tagName === 'INPUT' &&
-                    ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(element.type))) {
-                    element.focus();
-                    element.value = value;
-                } else if (element.getAttribute('contenteditable') === 'true') {
-                    element.focus();
-                    element.textContent = value;
-                } else {
-                    throw new Error('Element is not a supported text control.');
-                }
-                element.dispatchEvent(new Event('input', { bubbles: true }));
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-                """, cancellationToken).ConfigureAwait(false);
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                await RunReferenceActionAsync(reference, $$"""
+                    if (element.readOnly || element.hasAttribute('readonly')) throw new Error('Element is read-only.');
+                    const value = {{JsonSerializer.Serialize(value)}};
+                    if (element.tagName === 'TEXTAREA' || (element.tagName === 'INPUT' &&
+                        ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(element.type))) {
+                        element.focus();
+                        element.value = value;
+                    } else if (element.getAttribute('contenteditable') === 'true') {
+                        element.focus();
+                        element.textContent = value;
+                    } else {
+                        throw new Error('Element is not a supported text control.');
+                    }
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                    """, cancellationToken).ConfigureAwait(false);
+            }
+            finally { _navigationGate.Release(); }
         }
 
         public async Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default)
         {
-            ArgumentNullException.ThrowIfNull(value);
-            await RunReferenceActionAsync(reference, $$"""
-                if (element.tagName !== 'SELECT') throw new Error('Element is not a select.');
-                const value = {{JsonSerializer.Serialize(value)}};
-                const option = Array.from(element.options).find(o => o.value === value || o.textContent.trim() === value);
-                if (!option || option.disabled || option.parentElement?.disabled) throw new Error('Option unavailable.');
-                element.value = option.value;
-                element.dispatchEvent(new Event('input', { bubbles: true }));
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-                """, cancellationToken).ConfigureAwait(false);
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                await RunReferenceActionAsync(reference, $$"""
+                    if (element.tagName !== 'SELECT') throw new Error('Element is not a select.');
+                    const value = {{JsonSerializer.Serialize(value)}};
+                    const option = Array.from(element.options).find(o => o.value === value || o.textContent.trim() === value);
+                    if (!option || option.disabled || option.parentElement?.disabled) throw new Error('Option unavailable.');
+                    element.value = option.value;
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                    """, cancellationToken).ConfigureAwait(false);
+            }
+            finally { _navigationGate.Release(); }
         }
 
         private Task<JsonElement> RunReferenceActionAsync(string reference, string action, CancellationToken cancellationToken)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+            if (!reference.StartsWith(_referencePrefix, StringComparison.Ordinal))
+                throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
+            var brokerReference = reference[_referencePrefix.Length..];
             return EvaluateAsync($$"""
                 (() => {
-                    const reference = {{JsonSerializer.Serialize(reference)}};
+                    const reference = {{JsonSerializer.Serialize(brokerReference)}};
                     const element = Array.from(document.querySelectorAll('[data-folio-ref]'))
                         .find(candidate => candidate.getAttribute('data-folio-ref') === reference);
                     if (!element) throw new Error('Stale element reference; capture a new snapshot.');

@@ -69,7 +69,10 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
         using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedLogs.StatusCode);
-        using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = "e1" }, timeout.Token);
+        var previousReference = snapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
+        using var newSnapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
+        Assert.AreNotEqual(previousReference, newSnapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
+        using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = previousReference }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.Conflict, staleClick.StatusCode);
 
         using var failedCreate = await client.PostAsJsonAsync("v1/pages", new { url = "https://example.com" }, timeout.Token);
