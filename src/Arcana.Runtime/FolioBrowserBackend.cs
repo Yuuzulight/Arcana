@@ -440,7 +440,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
     }
 
-    private sealed class BrokerConnection : IAsyncDisposable
+    internal sealed class BrokerConnection : IAsyncDisposable
     {
         private const int MaxResponseChars = 2 * 1024 * 1024;
         // The 1280 Ã— 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
@@ -458,6 +458,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             _reader = new BoundedLineReader(process.StandardOutput);
             _ = process.StandardError.ReadToEndAsync();
         }
+
+        internal int ProcessId => _process.Id;
 
         public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken)
         {

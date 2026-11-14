@@ -13,6 +13,22 @@ namespace Arcana.Runtime.Tests;
 public sealed class FolioApiBackendTests
 {
     [TestMethod]
+    public async Task FolioConnectionClosesAfterBrokerProcessExits()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the broker-exit regression.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var connection = await FolioBrowserBackend.BrokerConnection.StartAsync(executable!, [], timeout.Token);
+        using var process = Process.GetProcessById(connection.ProcessId);
+        process.Kill(entireProcessTree: true);
+        await process.WaitForExitAsync(timeout.Token);
+        var result = await connection.CloseAsync(timeout.Token);
+        Assert.IsTrue(result.GetProperty("ok").GetBoolean());
+    }
+
+    [TestMethod]
     public async Task FolioPageRemainsUsableAfterAPreCanceledRequest()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
