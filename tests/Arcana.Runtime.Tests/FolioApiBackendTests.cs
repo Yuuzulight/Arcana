@@ -197,6 +197,50 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioNavigationDoesNotExposeStorageFromAnotherOrigin()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
+            Assert.Inconclusive("Set the navigation broker and ARCANA_TEST_FOLIO_LIVE_WEB=1 to run the public HTTPS fixtures.");
+
+        const string firstOrigin = "https://example.com";
+        const string secondOrigin = "https://httpbingo.org";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, [firstOrigin, secondOrigin]);
+        await using var api = new ArcanaApiServer(browser, "folio-storage-test");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-storage-test");
+
+        using var created = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        var pageJson = await created.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, pageJson);
+        using var page = JsonDocument.Parse(pageJson);
+        var route = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
+        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test')]";
+        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        var before = await Evaluate(readStorage);
+        Assert.AreEqual(firstOrigin, before[0].GetString());
+        Assert.AreEqual("local", before[1].GetString());
+        Assert.AreEqual("session", before[2].GetString());
+
+        using var navigated = await client.PostAsJsonAsync($"{route}/navigate", new { url = secondOrigin + "/html" }, timeout.Token);
+        Assert.IsTrue(navigated.IsSuccessStatusCode, await navigated.Content.ReadAsStringAsync(timeout.Token));
+        var after = await Evaluate(readStorage);
+        Assert.AreEqual(secondOrigin, after[0].GetString());
+        Assert.AreEqual(JsonValueKind.Null, after[1].ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, after[2].ValueKind);
+
+        async Task<JsonElement> Evaluate(string expression)
+        {
+            using var response = await client.PostAsJsonAsync($"{route}/evaluate", new { expression }, timeout.Token);
+            var json = await response.Content.ReadAsStringAsync(timeout.Token);
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
+            return JsonSerializer.Deserialize<JsonElement>(json);
+        }
+    }
+
+    [TestMethod]
     public async Task FolioNavigationRunsARelativeExternalScript()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
