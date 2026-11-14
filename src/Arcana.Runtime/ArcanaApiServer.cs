@@ -18,7 +18,9 @@ public sealed class ArcanaApiServer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, IArcanaPageBackend> _pages = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<object>> _logs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _logLifetimes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<long, Task> _handlers = new();
     private readonly CancellationTokenSource _lifetime = new();
+    private long _nextHandlerId;
     private Task? _loop;
     private bool _disposed;
 
@@ -62,13 +64,27 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             try { await _loop.ConfigureAwait(false); }
             catch (HttpListenerException) { }
         }
-        foreach (var page in _pages.Values) await page.CloseAsync().ConfigureAwait(false);
-        foreach (var lifetime in _logLifetimes.Values) lifetime.Cancel();
-        foreach (var lifetime in _logLifetimes.Values) lifetime.Dispose();
+        var handlers = _handlers.Values.ToArray();
+        try { await Task.WhenAll(handlers).ConfigureAwait(false); }
+        catch { /* Continue shutdown after handlers have completed, even if a client disconnected mid-response. */ }
+        List<Exception> pageCloseErrors = [];
+        foreach (var page in _pages.Values)
+        {
+            try { await page.CloseAsync().ConfigureAwait(false); }
+            catch (Exception error) { pageCloseErrors.Add(error); }
+        }
+        foreach (var lifetime in _logLifetimes.Values)
+        {
+            lifetime.Cancel();
+            lifetime.Dispose();
+        }
+        _logLifetimes.Clear();
         _pages.Clear();
         _logs.Clear();
         _listener.Close();
         _lifetime.Dispose();
+        if (pageCloseErrors.Count > 0)
+            throw new AggregateException("One or more Arcana pages failed to close.", pageCloseErrors);
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -79,7 +95,18 @@ public sealed class ArcanaApiServer : IAsyncDisposable
             try { context = await _listener.GetContextAsync().WaitAsync(cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
             catch (HttpListenerException) when (cancellationToken.IsCancellationRequested) { break; }
-            _ = Task.Run(() => HandleAsync(context, cancellationToken), cancellationToken);
+            var id = Interlocked.Increment(ref _nextHandlerId);
+            var handler = Task.Run(() => HandleAsync(context, cancellationToken), CancellationToken.None);
+            _handlers[id] = handler;
+            _ = handler.ContinueWith(
+                completed =>
+                {
+                    _handlers.TryRemove(id, out _);
+                    _ = completed.Exception;
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 
@@ -275,7 +302,18 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (WebSocketException) { }
-        finally { events.Dispose(); try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None); } catch { } socket.Dispose(); }
+        finally
+        {
+            using (socket)
+            using (var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                try
+                {
+                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "closed", closeTimeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
+            }
+        }
     }
 
     private bool Authorize(HttpListenerRequest request)
