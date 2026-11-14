@@ -12,6 +12,66 @@ namespace Arcana.Runtime.Tests;
 [TestClass]
 public sealed class ApiServerTests
 {
+    private sealed class PageCreationGateBackend : IArcanaBrowserBackend
+    {
+        public TaskCompletionSource CreationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseCreation { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public GatedPage Page { get; } = new();
+
+        public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(new { product = "test" }));
+
+        public Task<IReadOnlyList<BrowserTab>> GetTabsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<BrowserTab>>([]);
+
+        public async Task<IArcanaPageBackend> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
+        {
+            CreationStarted.TrySetResult();
+            await ReleaseCreation.Task.ConfigureAwait(false);
+            return Page;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class GatedPage : IArcanaPageBackend
+    {
+        public int CloseCount;
+
+        public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default) => Unsupported();
+        public Task SetContentAsync(string html, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default) => Unsupported<PageSnapshot>();
+        public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default) => Unsupported<PageStorageState>();
+        public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default) => Unsupported();
+        public Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default) => Unsupported<byte[]>();
+        public Task<JsonElement> EvaluateAsync(string expression, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException();
+        public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref CloseCount);
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+        }
+        public Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>();
+        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>();
+        public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default) => Unsupported();
+        public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported();
+        public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported();
+        public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
+        public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported();
+        public Task ClickAsync(string reference, CancellationToken cancellationToken = default) => Unsupported();
+        public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported();
+        public Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported();
+
+        private static Task Unsupported() => Task.FromException(new NotSupportedException());
+        private static Task<T> Unsupported<T>() => Task.FromException<T>(new NotSupportedException());
+    }
+
     private sealed class ApiTestContext : IAsyncDisposable
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -108,6 +168,41 @@ public sealed class ApiServerTests
             if (_browser is not null) await _browser.DisposeAsync().ConfigureAwait(false);
             if (_runtime is not null) await _runtime.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    [TestMethod]
+    public async Task ShutdownWaitsForInflightPageCreationAndClosesTheCreatedPage()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var backend = new PageCreationGateBackend();
+        var api = new ArcanaApiServer(backend, "shutdown-race-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "shutdown-race-token");
+
+        var creation = client.PostAsJsonAsync("v1/pages", new { html = "<html><body>gated</body></html>" });
+        var shutdown = Task.CompletedTask;
+        try
+        {
+            await backend.CreationStarted.Task.WaitAsync(timeout.Token);
+            shutdown = api.DisposeAsync().AsTask();
+            await Task.Delay(100, timeout.Token);
+            Assert.IsFalse(shutdown.IsCompleted, "Shutdown must wait for a request handler that is creating a page.");
+
+            backend.ReleaseCreation.TrySetResult();
+            await shutdown.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            backend.ReleaseCreation.TrySetResult();
+            await shutdown.WaitAsync(timeout.Token);
+            await backend.DisposeAsync();
+        }
+
+        Assert.AreEqual(1, backend.Page.CloseCount, "The page registered by the in-flight request must be closed during graceful shutdown.");
+        try { using var response = await creation.WaitAsync(timeout.Token); }
+        catch (HttpRequestException) { }
+        catch (TaskCanceledException) { }
     }
 
     [TestMethod]
