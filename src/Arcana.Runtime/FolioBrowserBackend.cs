@@ -144,7 +144,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         public async Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default)
         {
-            var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
+            using var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
                 throw new InvalidOperationException("Folio broker did not return a page snapshot.");
@@ -169,7 +169,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(expression);
             var wrapped = $"JSON.stringify(({{ value: ({expression}) }}))";
-            var response = await _broker.RequestAsync("evaluate", new { expression = wrapped }, cancellationToken).ConfigureAwait(false);
+            using var response = await _broker.RequestAsync("evaluate", new { expression = wrapped }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             if (!response.RootElement.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
                 return JsonSerializer.SerializeToElement<object?>(null);
