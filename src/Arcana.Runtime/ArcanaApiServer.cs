@@ -107,6 +107,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         catch (ArgumentException error) { await ErrorAsync(context.Response, 400, "invalid_request", error.Message); }
         catch (TimeoutException error) { await ErrorAsync(context.Response, 408, "timeout", error.Message); }
         catch (KeyNotFoundException error) { await ErrorAsync(context.Response, 404, "not_found", error.Message); }
+        catch (FolioNavigationException error) { await ErrorAsync(context.Response, 409, error.Code, error.Message); }
         catch (NotSupportedException error) { await ErrorAsync(context.Response, 501, "unsupported_operation", error.Message); }
         catch (Exception error) when (error is InvalidOperationException or CdpException)
         { await ErrorAsync(context.Response, 409, "operation_failed", error.Message); }
@@ -139,7 +140,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         var id = Guid.NewGuid().ToString("N");
         _pages[id] = page;
         StartLogCapture(id, page);
-        await JsonAsync(context.Response, 201, new { pageId = id, url = body?.Url ?? "about:blank" });
+        await JsonAsync(context.Response, 201, new { pageId = id, url = page.CurrentUrl ?? body?.Url ?? "about:blank" });
     }
 
     private async Task RestoreCookiesAsync(IArcanaPageBackend page, CancellationToken cancellationToken)

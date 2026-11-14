@@ -17,6 +17,7 @@ public sealed record ArcanaOptions
     public string Backend { get; init; } = DefaultBackend;
     public string? FolioExecutablePath { get; init; }
     public string? FolioBrokerPath { get; init; }
+    public IReadOnlyList<string> FolioAllowedOrigins { get; init; } = [];
 
     public void Validate()
     {

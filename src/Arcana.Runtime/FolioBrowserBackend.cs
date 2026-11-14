@@ -4,22 +4,29 @@ using System.Text.Json;
 
 namespace Arcana.Runtime;
 
+internal sealed class FolioNavigationException(string code, string message) : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
+}
+
 /// <summary>Opt-in Arcana adapter for Folio's AppContainer-backed headless broker.</summary>
 public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _brokerExecutable;
+    private readonly string[] _allowedOrigins;
     private readonly ConcurrentDictionary<string, FolioPageBackend> _pages = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    public FolioBrowserBackend(string brokerExecutable)
+    public FolioBrowserBackend(string brokerExecutable, IEnumerable<string>? allowedOrigins = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
         _brokerExecutable = Path.GetFullPath(brokerExecutable);
+        _allowedOrigins = allowedOrigins?.ToArray() ?? [];
         if (!File.Exists(_brokerExecutable)) throw new FileNotFoundException("The Folio content broker executable was not found.", _brokerExecutable);
     }
 
-    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options)) { }
+    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options), options.FolioAllowedOrigins) { }
 
     private static string ResolveBrokerPath(ArcanaOptions options)
     {
@@ -27,6 +34,14 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         options.Validate();
         return options.FolioBrokerPath
             ?? throw new ArgumentException("The Folio backend requires FolioBrokerPath to point to the broker-enabled Folio.ContentHost build.", nameof(options));
+    }
+
+    /// <summary>Confirms the configured broker can start its required sandbox before the API starts listening.</summary>
+    public async Task VerifyStartupAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, cancellationToken).ConfigureAwait(false);
+        await broker.CloseAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default)
@@ -50,11 +65,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     public async Task<IArcanaPageBackend> NewPageAsync(string? url = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (url is not null && url != "about:blank")
-            throw new NotSupportedException("Folio pages currently accept only about:blank and inline HTML fixtures.");
 
         var id = Guid.NewGuid().ToString("N");
-        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
+        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, _allowedOrigins, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
         if (!_pages.TryAdd(id, page))
         {
             await page.CloseAsync(CancellationToken.None).ConfigureAwait(false);
@@ -81,6 +94,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         if (response.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True) return;
         var code = response.RootElement.TryGetProperty("error", out var error) && error.TryGetProperty("code", out var codeValue) ? codeValue.GetString() : null;
         var message = response.RootElement.TryGetProperty("error", out error) && error.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
+        if (code == "timeout") throw new TimeoutException(message ?? "Folio navigation timed out.");
+        if (code is "policy_refused" or "navigation_failed")
+            throw new FolioNavigationException(code, message ?? "Folio navigation failed.");
         if (code is "unsupported" or "sandbox_unavailable" or "sandbox_bypassed")
             throw new NotSupportedException(message ?? "The Folio sandbox does not support this operation in the current environment.");
         throw new InvalidOperationException(message ?? $"Folio broker operation failed ({code ?? "unknown"}).");
@@ -90,25 +106,33 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     {
         private const string BlankHtml = "<!doctype html><html><head><title></title></head><body></body></html>";
         private readonly BrokerConnection _broker;
+        private readonly bool _navigationEnabled;
+        private readonly SemaphoreSlim _navigationGate = new(1, 1);
+        private readonly List<NavigationEntry> _history = [];
+        private int _historyIndex = -1;
+
+        private sealed record NavigationEntry(string Url, string? Html = null);
         private bool _closed;
 
-        private FolioPageBackend(BrokerConnection broker, string url)
+        private FolioPageBackend(BrokerConnection broker, bool navigationEnabled)
         {
             _broker = broker;
-            Url = url;
+            _navigationEnabled = navigationEnabled;
+            Url = "about:blank";
         }
 
         public event Action? Closed;
         public string Url { get; private set; }
+        public string CurrentUrl => Url;
         public string Title { get; private set; } = "";
 
-        public static async Task<FolioPageBackend> CreateAsync(string executable, string url, CancellationToken cancellationToken)
+        public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string url, CancellationToken cancellationToken)
         {
-            var connection = await BrokerConnection.StartAsync(executable, cancellationToken).ConfigureAwait(false);
-            var page = new FolioPageBackend(connection, url);
+            var connection = await BrokerConnection.StartAsync(executable, allowedOrigins, cancellationToken).ConfigureAwait(false);
+            var page = new FolioPageBackend(connection, allowedOrigins.Length > 0);
             try
             {
-                await page.LoadAsync(BlankHtml, cancellationToken).ConfigureAwait(false);
+                await page.NavigateAndWaitAsync(url, cancellationToken).ConfigureAwait(false);
                 return page;
             }
             catch
@@ -121,19 +145,20 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task SetContentAsync(string html, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(html);
-            return LoadAsync(html, cancellationToken);
+            return CommitNavigationAsync(new NavigationEntry("about:blank", html), replace: true, cancellationToken);
         }
 
         private async Task LoadAsync(string html, CancellationToken cancellationToken)
         {
-            using var response = await _broker.RequestAsync("load", new { html, urlLabel = Url }, cancellationToken).ConfigureAwait(false);
+            using var response = await _broker.RequestAsync("load", new { html, urlLabel = "about:blank" }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
+            Url = "about:blank";
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<PageSnapshot> SnapshotAsync(CancellationToken cancellationToken = default)
         {
-            var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
+            using var response = await _broker.RequestAsync("snapshot", new { }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             if (!response.RootElement.TryGetProperty("snapshot", out var snapshot))
                 throw new InvalidOperationException("Folio broker did not return a page snapshot.");
@@ -158,7 +183,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(expression);
             var wrapped = $"JSON.stringify(({{ value: ({expression}) }}))";
-            var response = await _broker.RequestAsync("evaluate", new { expression = wrapped }, cancellationToken).ConfigureAwait(false);
+            using var response = await _broker.RequestAsync("evaluate", new { expression = wrapped }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
             if (!response.RootElement.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
                 return JsonSerializer.SerializeToElement<object?>(null);
@@ -166,11 +191,49 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             return parsed.RootElement.TryGetProperty("value", out var result) ? result.Clone() : JsonSerializer.SerializeToElement<object?>(null);
         }
 
-        public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default) =>
-            Task.FromException(new NotSupportedException("Folio navigation is not supported in this offline fixture slice."));
+        public Task NavigateAndWaitAsync(string url, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(url);
+            return CommitNavigationAsync(new NavigationEntry(url), replace: false, cancellationToken);
+        }
+
+        private async Task CommitNavigationAsync(NavigationEntry entry, bool replace, CancellationToken cancellationToken)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await LoadEntryAsync(entry, cancellationToken).ConfigureAwait(false);
+                if (replace && _historyIndex >= 0)
+                    _history[_historyIndex] = entry;
+                else
+                {
+                    _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1);
+                    _history.Add(entry);
+                    _historyIndex = _history.Count - 1;
+                }
+            }
+            finally { _navigationGate.Release(); }
+        }
+
+        private async Task LoadEntryAsync(NavigationEntry entry, CancellationToken cancellationToken)
+        {
+            var url = entry.Url;
+            if (url == "about:blank")
+            {
+                await LoadAsync(entry.Html ?? BlankHtml, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (!_navigationEnabled) throw new NotSupportedException("Folio navigation requires an explicit HTTPS origin policy.");
+
+            using var response = await _broker.RequestAsync("navigate", new { url }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            Url = response.RootElement.GetProperty("url").GetString() ?? url;
+            await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default) =>
-            Task.FromException(new NotSupportedException("Folio network-idle waiting is not supported because this backend does not enable network access."));
+            Task.FromException(new NotSupportedException("Folio network-idle waiting is not supported by the Folio broker."));
 
         public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
         public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
@@ -193,9 +256,35 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
         public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
-        public Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("reload");
-        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
-        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
+        public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var entry = _history[_historyIndex];
+                await LoadEntryAsync(entry.Html is null ? new NavigationEntry(Url) : entry, cancellationToken).ConfigureAwait(false);
+                return JsonSerializer.SerializeToElement(new { });
+            }
+            finally { _navigationGate.Release(); }
+        }
+
+        public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => MoveHistoryAsync(-1, cancellationToken);
+        public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => MoveHistoryAsync(1, cancellationToken);
+
+        private async Task<bool> MoveHistoryAsync(int delta, CancellationToken cancellationToken)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var index = _historyIndex + delta;
+                if (index < 0 || index >= _history.Count) return false;
+                await LoadEntryAsync(_history[index], cancellationToken).ConfigureAwait(false);
+                _historyIndex = index;
+                return true;
+            }
+            finally { _navigationGate.Release(); }
+        }
+
         public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");
         public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported("click-at");
         public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported("keyboard input");
@@ -245,9 +334,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             _ = process.StandardError.ReadToEndAsync();
         }
 
-        public static async Task<BrokerConnection> StartAsync(string executable, CancellationToken cancellationToken)
+        public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken)
         {
-            var startInfo = CreateStartInfo(executable);
+            var startInfo = CreateStartInfo(executable, allowedOrigins);
             var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start the Folio broker.");
             var connection = new BrokerConnection(process);
             try
@@ -353,7 +442,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             _process.Dispose();
         }
 
-        private static ProcessStartInfo CreateStartInfo(string executable)
+        private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins)
         {
             var path = Path.GetFullPath(executable);
             var isAssembly = Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase);
@@ -369,6 +458,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             if (isAssembly) startInfo.ArgumentList.Add(path);
             startInfo.ArgumentList.Add("--broker");
             startInfo.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
+            foreach (var origin in allowedOrigins) startInfo.ArgumentList.Add($"--allow-origin={origin}");
             return startInfo;
         }
 
