@@ -170,10 +170,13 @@ public sealed class FolioApiBackendTests
         using var page = JsonDocument.Parse(json);
         var pageId = page.RootElement.GetProperty("pageId").GetString();
         using var evaluated = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate",
-            new { expression = "typeof window.getSomeString" }, timeout.Token);
+            new { expression = "document.body.textContent = window.getSomeString()" }, timeout.Token);
         var result = await evaluated.Content.ReadAsStringAsync(timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, evaluated.StatusCode, result);
-        Assert.AreEqual("function", JsonSerializer.Deserialize<string>(result));
+        var scriptText = JsonSerializer.Deserialize<string>(result);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(scriptText), "The external script should return text.");
+        using var snapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{pageId}/snapshot", timeout.Token));
+        Assert.AreEqual(scriptText, snapshot.RootElement.GetProperty("text").GetString()?.Trim());
     }
 
     [TestMethod]
