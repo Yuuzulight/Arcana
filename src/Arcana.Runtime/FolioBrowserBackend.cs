@@ -225,7 +225,12 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
         public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
-        public Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("reload");
+        public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
+        {
+            if (Url == "about:blank") throw new NotSupportedException("Reload requires a navigated Folio document.");
+            await NavigateAndWaitAsync(Url, cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.SerializeToElement(new { });
+        }
         public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
         public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
         public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");

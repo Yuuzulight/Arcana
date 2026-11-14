@@ -177,6 +177,12 @@ public sealed class FolioApiBackendTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(scriptText), "The external script should return text.");
         using var snapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{pageId}/snapshot", timeout.Token));
         Assert.AreEqual(scriptText, snapshot.RootElement.GetProperty("text").GetString()?.Trim());
+
+        using var reload = await client.PostAsJsonAsync($"v1/pages/{pageId}/reload", new { }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, reload.StatusCode, await reload.Content.ReadAsStringAsync(timeout.Token));
+        using var reloaded = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{pageId}/snapshot", timeout.Token));
+        Assert.AreEqual(fixture, reloaded.RootElement.GetProperty("url").GetString());
+        Assert.AreNotEqual(scriptText, reloaded.RootElement.GetProperty("text").GetString()?.Trim());
     }
 
     [TestMethod]
