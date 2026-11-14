@@ -47,6 +47,11 @@ public sealed class FolioApiBackendTests
         using var sideEffectResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
         Assert.AreEqual(8, await sideEffectResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
 
+        var previousReference = snapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
+        Assert.IsFalse(string.IsNullOrWhiteSpace(previousReference));
+        using var sameDocument = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
+        Assert.AreEqual(previousReference, sameDocument.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
+
         using var reloaded = await client.PostAsJsonAsync($"v1/pages/{id}/reload", new { }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, reloaded.StatusCode, await reloaded.Content.ReadAsStringAsync(timeout.Token));
         using var resetState = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
@@ -69,7 +74,6 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
         using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedLogs.StatusCode);
-        var previousReference = snapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
         using var newSnapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
         Assert.AreNotEqual(previousReference, newSnapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
         using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = previousReference }, timeout.Token);
