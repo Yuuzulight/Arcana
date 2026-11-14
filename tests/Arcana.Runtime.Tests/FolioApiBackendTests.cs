@@ -28,8 +28,9 @@ public sealed class FolioApiBackendTests
         {
             html = "<!doctype html><html><head><title>Folio Fixture</title></head><body><button>Folio sandbox fixture</button><script>window.fixtureCount=7</script></body></html>"
         }, timeout.Token);
-        Assert.AreEqual(HttpStatusCode.Created, createdResponse.StatusCode);
-        using var created = JsonDocument.Parse(await createdResponse.Content.ReadAsStringAsync(timeout.Token));
+        var createdBody = await createdResponse.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, createdResponse.StatusCode, createdBody);
+        using var created = JsonDocument.Parse(createdBody);
         var id = created.RootElement.GetProperty("pageId").GetString();
         Assert.IsFalse(string.IsNullOrWhiteSpace(id));
 
@@ -111,7 +112,7 @@ public sealed class FolioApiBackendTests
             using var client = new HttpClient { BaseAddress = endpoint };
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "crash-cleanup-test");
             using var page = await client.PostAsJsonAsync("v1/pages", new { html = "<!doctype html><title>Crash cleanup</title><body>live</body>" }, timeout.Token);
-            Assert.AreEqual(HttpStatusCode.Created, page.StatusCode);
+            Assert.AreEqual(HttpStatusCode.Created, page.StatusCode, await page.Content.ReadAsStringAsync(timeout.Token));
 
             var spawned = Array.Empty<int>();
             for (var attempt = 0; attempt < 100; attempt++)
