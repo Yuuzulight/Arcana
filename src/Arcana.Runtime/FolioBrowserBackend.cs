@@ -36,6 +36,14 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             ?? throw new ArgumentException("The Folio backend requires FolioBrokerPath to point to the broker-enabled Folio.ContentHost build.", nameof(options));
     }
 
+    /// <summary>Confirms the configured broker can start its required sandbox before the API starts listening.</summary>
+    public async Task VerifyStartupAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, cancellationToken).ConfigureAwait(false);
+        await broker.CloseAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public Task<JsonElement> GetVersionAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

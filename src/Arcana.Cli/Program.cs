@@ -130,6 +130,7 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
     if (options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
     {
         await using var folioBrowser = new FolioBrowserBackend(options);
+        await folioBrowser.VerifyStartupAsync(cancellationToken);
         await using var folioApi = new ArcanaApiServer(folioBrowser, token, int.TryParse(GetOption(args, "port"), out var folioPort) ? folioPort : 0, options.ProfileDirectory);
         folioApi.Start();
         var folioReady = new { apiVersion = ArcanaApiServer.Version, endpoint = folioApi.Endpoint, token, backend = "folio" };
