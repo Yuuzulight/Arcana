@@ -177,6 +177,37 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task ArcanaCliDoesNotReportReadyWhenFolioDisablesTheSandbox()
+    {
+        var broker = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        var cli = Environment.GetEnvironmentVariable("ARCANA_TEST_ARCANA_CLI");
+        if (string.IsNullOrWhiteSpace(broker) || string.IsNullOrWhiteSpace(cli))
+            Assert.Inconclusive("Set the Folio broker and Arcana CLI paths to verify startup.");
+
+        var start = CreateFolioApiStartInfo(cli!, broker!);
+        start.Environment["FOLIO_UNSANDBOXED"] = "1";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var host = Process.Start(start) ?? throw new InvalidOperationException("Unable to start Arcana.");
+        try
+        {
+            var output = host.StandardOutput.ReadToEndAsync(timeout.Token);
+            var error = host.StandardError.ReadToEndAsync(timeout.Token);
+            await host.WaitForExitAsync(timeout.Token);
+            Assert.AreNotEqual(0, host.ExitCode);
+            Assert.AreEqual("", await output);
+            StringAssert.Contains(await error, "FOLIO_UNSANDBOXED disables the required content-process sandbox");
+        }
+        finally
+        {
+            if (!host.HasExited)
+            {
+                host.Kill(entireProcessTree: true);
+                await host.WaitForExitAsync();
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task ArcanaHostExitReleasesBrokerAndSandboxWorker()
     {
         if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer process cleanup is verified on Windows.");
@@ -187,22 +218,7 @@ public sealed class FolioApiBackendTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var before = GetProcessIds(broker!);
-        var cliPath = Path.GetFullPath(cli!);
-        var cliIsAssembly = Path.GetExtension(cliPath).Equals(".dll", StringComparison.OrdinalIgnoreCase);
-        var start = new ProcessStartInfo(cliIsAssembly ? "dotnet" : cliPath)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        if (cliIsAssembly) start.ArgumentList.Add(cliPath);
-        start.ArgumentList.Add("api");
-        start.ArgumentList.Add("--backend=folio");
-        start.ArgumentList.Add($"--folio-broker={broker}");
-        start.ArgumentList.Add("--port=0");
-        start.ArgumentList.Add("--token=crash-cleanup-test");
+        var start = CreateFolioApiStartInfo(cli!, broker!);
 
         using var host = Process.Start(start) ?? throw new InvalidOperationException("Unable to start the Arcana API test host.");
         var stderr = host.StandardError.ReadToEndAsync();
@@ -249,6 +265,28 @@ public sealed class FolioApiBackendTests
                 await host.WaitForExitAsync(CancellationToken.None);
             }
         }
+    }
+
+    private static ProcessStartInfo CreateFolioApiStartInfo(string cli, string broker)
+    {
+        var cliPath = Path.GetFullPath(cli);
+        var cliIsAssembly = Path.GetExtension(cliPath).Equals(".dll", StringComparison.OrdinalIgnoreCase);
+        var start = new ProcessStartInfo(cliIsAssembly ? "dotnet" : cliPath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        if (cliIsAssembly) start.ArgumentList.Add(cliPath);
+        start.ArgumentList.Add("api");
+        start.ArgumentList.Add("--backend=folio");
+        start.ArgumentList.Add($"--folio-broker={broker}");
+        start.ArgumentList.Add("--port=0");
+        start.ArgumentList.Add("--token=crash-cleanup-test");
+
+        return start;
     }
 
     private static int[] GetProcessIds(string executablePath)
