@@ -105,6 +105,7 @@ public sealed class FolioApiBackendTests
         if (string.IsNullOrWhiteSpace(executable) || string.IsNullOrWhiteSpace(fixture))
             Assert.Inconclusive("Set the navigation broker and HTTPS fixture URL to run the live navigation test.");
         var url = new Uri(fixture!);
+        var expectedUrl = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_HTTPS_FINAL_URL") ?? url.AbsoluteUri;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         await using var browser = new FolioBrowserBackend(executable!, [url.GetLeftPart(UriPartial.Authority)]);
         await using var api = new ArcanaApiServer(browser, "folio-navigation-token");
@@ -118,7 +119,9 @@ public sealed class FolioApiBackendTests
         using var page = JsonDocument.Parse(json);
         using var snapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}/snapshot", timeout.Token));
         var root = snapshot.RootElement;
-        Assert.AreEqual(url.AbsoluteUri, root.GetProperty("url").GetString());
+        Assert.AreEqual(expectedUrl, root.GetProperty("url").GetString());
+        using var tabs = JsonDocument.Parse(await client.GetStringAsync("v1/tabs", timeout.Token));
+        Assert.AreEqual(expectedUrl, tabs.RootElement[0].GetProperty("url").GetString());
         Assert.IsFalse(string.IsNullOrWhiteSpace(root.GetProperty("text").GetString()));
     }
 
