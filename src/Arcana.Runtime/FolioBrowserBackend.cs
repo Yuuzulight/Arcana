@@ -315,7 +315,32 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         }
 
         public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
-        public Task ClickAsync(string reference, CancellationToken cancellationToken = default) => Unsupported("click");
+        public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+            var bounds = await EvaluateAsync($$"""
+                (() => {
+                    const reference = {{JsonSerializer.Serialize(reference)}};
+                    const element = Array.from(document.querySelectorAll('[data-folio-ref]'))
+                        .find(candidate => candidate.getAttribute('data-folio-ref') === reference);
+                    if (!element) return null;
+                    if (element.disabled || element.getAttribute('aria-disabled') === 'true') return [];
+                    for (let node = element; node; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        if (node.hasAttribute('hidden') || node.hasAttribute('inert') ||
+                            node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
+                            style.visibility === 'hidden' || style.visibility === 'collapse') return [];
+                    }
+                    const rect = element.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
+                })()
+                """, cancellationToken).ConfigureAwait(false);
+            if (bounds.ValueKind == JsonValueKind.Null)
+                throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
+            if (bounds.GetArrayLength() != 2)
+                throw new InvalidOperationException("The referenced element is hidden, disabled, or has no clickable bounds.");
+            await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+        }
         public Task FillAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("fill");
         public Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default) => Unsupported("select");
 

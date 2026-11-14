@@ -69,8 +69,8 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
         using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedLogs.StatusCode);
-        using var unsupportedClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = "e1" }, timeout.Token);
-        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedClick.StatusCode);
+        using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = "e1" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Conflict, staleClick.StatusCode);
 
         using var failedCreate = await client.PostAsJsonAsync("v1/pages", new { url = "https://example.com" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, failedCreate.StatusCode);
@@ -285,7 +285,9 @@ public sealed class FolioApiBackendTests
         using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
         var page = $"v1/pages/{document.RootElement.GetProperty("pageId").GetString()}";
 
-        await Act("click-at", new { x = 20, y = 15 });
+        using var controls = JsonDocument.Parse(await client.GetStringAsync($"{page}/snapshot", timeout.Token));
+        var reference = controls.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString();
+        await Act("click", new { @ref = reference });
         await Act("type", new { value = "Folio" });
         await Act("press", new { key = "End" });
         var beforeScroll = await Screenshot();
