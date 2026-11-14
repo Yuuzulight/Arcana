@@ -222,7 +222,7 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
-    public async Task FolioNavigationDoesNotExposeStorageFromAnotherOrigin()
+    public async Task FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
         if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
@@ -255,6 +255,21 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(secondOrigin, after[0].GetString());
         Assert.AreEqual(JsonValueKind.Null, after[1].ValueKind);
         Assert.AreEqual(JsonValueKind.Null, after[2].ValueKind);
+
+        using var back = await client.PostAsJsonAsync($"{route}/back", new { }, timeout.Token);
+        Assert.IsTrue(back.IsSuccessStatusCode, await back.Content.ReadAsStringAsync(timeout.Token));
+        var returned = await Evaluate(readStorage);
+
+        // Reseed after capturing the back-navigation result so reload is checked independently.
+        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        using var reload = await client.PostAsJsonAsync($"{route}/reload", new { }, timeout.Token);
+        Assert.IsTrue(reload.IsSuccessStatusCode, await reload.Content.ReadAsStringAsync(timeout.Token));
+        var reloaded = await Evaluate(readStorage);
+
+        Assert.AreEqual(returned.GetRawText(), reloaded.GetRawText(), "Back and reload should expose the same retained values.");
+        Assert.AreEqual(firstOrigin, returned[0].GetString());
+        Assert.AreEqual("local", returned[1].GetString(), $"Expected localStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
+        Assert.AreEqual("session", returned[2].GetString(), $"Expected sessionStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
 
         async Task<JsonElement> Evaluate(string expression)
         {
