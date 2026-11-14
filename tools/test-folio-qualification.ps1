@@ -24,6 +24,14 @@ try {
         [Environment]::SetEnvironmentVariable($key, $settings[$key])
     }
     $hash = (Get-FileHash -LiteralPath $brokerPath).Hash
+    $arcanaCommit = git -C $repo rev-parse HEAD
+    if ($LASTEXITCODE) { throw 'Cannot identify the Arcana source revision.' }
+    New-Item -ItemType Directory -Path $resultsPath -Force | Out-Null
+    [ordered]@{
+        arcanaCommit = $arcanaCommit
+        brokerSha256 = $hash.ToLowerInvariant()
+        report = [IO.Path]::GetFileName($trxPath)
+    } | ConvertTo-Json | Set-Content -LiteralPath ([IO.Path]::ChangeExtension($trxPath, '.json'))
     Write-Output "Folio broker SHA-256 $hash"
     dotnet build (Join-Path $repo 'Arcana.slnx') -c Release
     if ($LASTEXITCODE) { throw 'Arcana Release build failed.' }

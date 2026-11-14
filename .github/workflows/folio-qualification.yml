@@ -61,4 +61,5 @@ jobs:
           name: combined-folio-qualification
           path: |
             artifacts/folio-qualification/*.trx
+            artifacts/folio-qualification/*.json
             folio-source/artifacts/arcana-qualification/native-build.json
