@@ -47,6 +47,12 @@ public sealed class FolioApiBackendTests
         using var sideEffectResponse = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
         Assert.AreEqual(8, await sideEffectResponse.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
 
+        using var reloaded = await client.PostAsJsonAsync($"v1/pages/{id}/reload", new { }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, reloaded.StatusCode, await reloaded.Content.ReadAsStringAsync(timeout.Token));
+        using var resetState = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new { expression = "window.fixtureCount" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, resetState.StatusCode);
+        Assert.AreEqual(7, await resetState.Content.ReadFromJsonAsync<int>(cancellationToken: timeout.Token));
+
         using var unsupportedNavigation = await client.PostAsJsonAsync($"v1/pages/{id}/navigate", new { url = "https://example.com" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedNavigation.StatusCode);
         using var screenshot = await client.GetAsync($"v1/pages/{id}/screenshot", timeout.Token);

@@ -107,6 +107,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         private const string BlankHtml = "<!doctype html><html><head><title></title></head><body></body></html>";
         private readonly BrokerConnection _broker;
         private readonly bool _navigationEnabled;
+        private string? _inlineHtml;
         private bool _closed;
 
         private FolioPageBackend(BrokerConnection broker, bool navigationEnabled)
@@ -147,6 +148,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             using var response = await _broker.RequestAsync("load", new { html, urlLabel = "about:blank" }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
+            _inlineHtml = html;
+            Url = "about:blank";
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -198,6 +201,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
             using var response = await _broker.RequestAsync("navigate", new { url }, cancellationToken).ConfigureAwait(false);
             EnsureSuccess(response);
+            _inlineHtml = null;
+            Url = response.RootElement.GetProperty("url").GetString() ?? url;
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -227,8 +232,10 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
         public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
         {
-            if (Url == "about:blank") throw new NotSupportedException("Reload requires a navigated Folio document.");
-            await NavigateAndWaitAsync(Url, cancellationToken).ConfigureAwait(false);
+            if (_inlineHtml is { } html)
+                await LoadAsync(html, cancellationToken).ConfigureAwait(false);
+            else
+                await NavigateAndWaitAsync(Url, cancellationToken).ConfigureAwait(false);
             return JsonSerializer.SerializeToElement(new { });
         }
         public Task<bool> GoBackAsync(CancellationToken cancellationToken = default) => Unsupported<bool>("history navigation");
