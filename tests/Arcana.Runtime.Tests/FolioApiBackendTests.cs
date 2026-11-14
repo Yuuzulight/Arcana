@@ -127,6 +127,32 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioNavigationRunsARelativeExternalScript()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
+        if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
+            Assert.Inconclusive("Set the navigation broker and ARCANA_TEST_FOLIO_LIVE_WEB=1 to run the public HTTPS fixture.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var browser = new FolioBrowserBackend(executable!, ["https://wpt.live"]);
+        await using var api = new ArcanaApiServer(browser, "folio-script-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-script-token");
+
+        const string fixture = "https://wpt.live/html/semantics/scripting-1/the-script-element/script-charset-01.html";
+        using var response = await client.PostAsJsonAsync("v1/pages", new { url = fixture }, timeout.Token);
+        var json = await response.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, response.StatusCode, json);
+        using var page = JsonDocument.Parse(json);
+        var pageId = page.RootElement.GetProperty("pageId").GetString();
+        using var evaluated = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate",
+            new { expression = "typeof window.getSomeString" }, timeout.Token);
+        var result = await evaluated.Content.ReadAsStringAsync(timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, evaluated.StatusCode, result);
+        Assert.AreEqual("function", JsonSerializer.Deserialize<string>(result));
+    }
+
+    [TestMethod]
     public async Task ArcanaHostExitReleasesBrokerAndSandboxWorker()
     {
         if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Folio AppContainer process cleanup is verified on Windows.");
