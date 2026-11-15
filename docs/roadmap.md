@@ -63,7 +63,7 @@ before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-**Status: Open.** [Issue #13](https://github.com/Yuuzulight/Arcana/issues/13) tracks integration with the sandboxed Folio content host. The managed prototype exercises local fixtures. Qualification requires the actual Folio renderer and script engine to pass the shared API contract and maintained live-site flows.
+**Status: Open.** [Issue #13](https://github.com/Yuuzulight/Arcana/issues/13) tracks integration with the sandboxed Folio content host. Arcana has draft integration for the sandboxed Folio renderer, including HTTPS navigation, screenshots, and page input. Local tests cover these paths using separate broker builds. The combined Windows gate needs one pinned broker with both navigation and input. The storage retention test currently fails against the available navigation broker. Full qualification also requires the shared API contract and maintained site flows to pass on Folio.
 
 ## M6: Cutover
 

@@ -7,7 +7,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Arcana.Runtime.Tests;
 
-/// <summary>Maintained qualification test suite covering real SPA flows on Folio and Obscura.</summary>
+/// <summary>Maintained SPA regression flows for the qualified Obscura backend.</summary>
 [TestClass]
 public sealed class SpaQualificationTests
 {
@@ -16,23 +16,17 @@ public sealed class SpaQualificationTests
         public Uri Endpoint { get; }
         public string Token { get; } = "spa-test-token";
         public HttpClient Client { get; }
-        public string BackendName { get; }
         private readonly HttpClientHandler _handler;
         private readonly ArcanaApiServer _api;
-        private readonly FolioBrowserBackend? _folioBackend;
         private readonly BrowserRuntime? _obscuraRuntime;
         private readonly ArcanaBrowser? _obscuraBrowser;
 
         private EngineFixture(
-            string backendName,
             ArcanaApiServer api,
-            FolioBrowserBackend? folioBackend,
             BrowserRuntime? obscuraRuntime,
             ArcanaBrowser? obscuraBrowser)
         {
-            BackendName = backendName;
             _api = api;
-            _folioBackend = folioBackend;
             _obscuraRuntime = obscuraRuntime;
             _obscuraBrowser = obscuraBrowser;
             Endpoint = api.Endpoint;
@@ -40,15 +34,6 @@ public sealed class SpaQualificationTests
             _handler = new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false };
             Client = new HttpClient(_handler) { BaseAddress = Endpoint };
             Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
-        }
-
-        public static async Task<EngineFixture> CreateFolioAsync(CancellationToken cancellationToken)
-        {
-            var options = new ArcanaOptions { Backend = "folio", AllowPrivateNetwork = true };
-            var backend = new FolioBrowserBackend(options);
-            var api = new ArcanaApiServer(backend, "spa-test-token");
-            api.Start();
-            return new EngineFixture("folio", api, backend, null, null);
         }
 
         public static async Task<EngineFixture> CreateObscuraAsync(CancellationToken cancellationToken)
@@ -65,7 +50,7 @@ public sealed class SpaQualificationTests
             var browser = await ArcanaBrowser.ConnectAsync(runtime, cancellationToken).ConfigureAwait(false);
             var api = new ArcanaApiServer(browser, "spa-test-token");
             api.Start();
-            return new EngineFixture("obscura", api, null, runtime, browser);
+            return new EngineFixture(api, runtime, browser);
         }
 
         public async ValueTask DisposeAsync()
@@ -73,84 +58,9 @@ public sealed class SpaQualificationTests
             Client.Dispose();
             _handler.Dispose();
             await _api.DisposeAsync().ConfigureAwait(false);
-            if (_folioBackend is not null) await _folioBackend.DisposeAsync().ConfigureAwait(false);
             if (_obscuraBrowser is not null) await _obscuraBrowser.DisposeAsync().ConfigureAwait(false);
             if (_obscuraRuntime is not null) await _obscuraRuntime.DisposeAsync().ConfigureAwait(false);
         }
-    }
-
-    // ==========================================
-    // FOLIO MAINTAINED SPA FLOWS
-    // ==========================================
-
-    [TestMethod]
-    public async Task SpaFlow1_StructuredContentAndTableExtraction_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow1Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task SpaFlow2_MultiStepInteractiveForm_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow2Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task SpaFlow3_ClientSideRoutingAndHistory_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow3Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task SpaFlow4_DynamicDomRenderingAndAsyncData_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow4Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task SpaFlow5_SessionStorageAndCookiePersistence_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow5Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task SpaFlow6_LiveScreencastAndPointerKeyboard_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunFlow6Async(engine, site, timeout.Token);
-    }
-
-    [TestMethod]
-    public async Task CapabilityQualification_IframeWorkerMediaServiceWorker_Folio()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await using var site = new TestSite();
-        await using var engine = await EngineFixture.CreateFolioAsync(timeout.Token);
-
-        await RunCapabilityQualificationAsync(engine, site, timeout.Token);
     }
 
     // ==========================================
@@ -384,30 +294,4 @@ public sealed class SpaQualificationTests
         Assert.AreEqual(HttpStatusCode.NoContent, delete.StatusCode);
     }
 
-    private static async Task RunCapabilityQualificationAsync(EngineFixture engine, TestSite site, CancellationToken cancellationToken)
-    {
-        // Qualifies iframe, worker, media, and service-worker containment boundaries
-        using var create = await engine.Client.PostAsJsonAsync("v1/pages", new { url = site.Origin + "/spa" }, cancellationToken);
-        Assert.AreEqual(HttpStatusCode.Created, create.StatusCode);
-        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync(cancellationToken));
-        var pageId = created.RootElement.GetProperty("pageId").GetString()!;
-
-        // 1. Iframe qualification: iframe element is captured in page structure
-        using var snap = await engine.Client.GetAsync($"v1/pages/{pageId}/snapshot", cancellationToken);
-        Assert.AreEqual(HttpStatusCode.OK, snap.StatusCode);
-
-        // 2. CDP metrics check (layout viewport, content size)
-        using var cdp = await engine.Client.PostAsJsonAsync($"v1/pages/{pageId}/cdp", new
-        {
-            method = "Page.getLayoutMetrics"
-        }, cancellationToken);
-        Assert.AreEqual(HttpStatusCode.OK, cdp.StatusCode);
-
-        // 3. Viewport resizing
-        using var vp = await engine.Client.PostAsJsonAsync($"v1/pages/{pageId}/viewport", new { width = 800, height = 600 }, cancellationToken);
-        Assert.AreEqual(HttpStatusCode.OK, vp.StatusCode);
-
-        using var delete = await engine.Client.DeleteAsync($"v1/pages/{pageId}", cancellationToken);
-        Assert.AreEqual(HttpStatusCode.NoContent, delete.StatusCode);
-    }
 }
