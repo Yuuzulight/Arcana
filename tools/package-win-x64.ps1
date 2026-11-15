@@ -47,7 +47,7 @@ if ($LASTEXITCODE -or $changed) { throw 'Package Arcana from a clean source chec
 $stage = [IO.Directory]::CreateTempSubdirectory('arcana-package-').FullName
 try {
     $package = Join-Path $stage 'package'
-    dotnet publish (Join-Path $repo 'src/Arcana.Cli/Arcana.Cli.csproj') -c Release -r win-x64 --self-contained true -o $package
+    dotnet publish (Join-Path $repo 'src/Arcana.Cli/Arcana.Cli.csproj') -c Release -r win-x64 --self-contained true -p:ArcanaFolioOnly=true -o $package
     if ($LASTEXITCODE) { throw 'Arcana publish failed.' }
 
     $engineParent = Join-Path $package 'engines/folio'

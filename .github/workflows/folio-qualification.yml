@@ -60,8 +60,20 @@ jobs:
         run: |
           $zip = Join-Path $pwd 'artifacts/release/arcana-win-x64.zip'
           ./tools/package-win-x64.ps1 -FolioPublish ./folio-source/artifacts/arcana-qualification -FolioCommit $env:FOLIO_COMMIT -OutputZip $zip
+          $expectedHash = ((Get-Content -LiteralPath "$zip.sha256") -split ' ')[0]
+          if ((Get-FileHash -LiteralPath $zip).Hash -ne $expectedHash) { throw 'The package checksum did not match.' }
           $unpacked = Join-Path $env:RUNNER_TEMP 'arcana-qualified-package'
           Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
+          $build = Get-Content -LiteralPath "$unpacked/arcana-build.json" -Raw | ConvertFrom-Json
+          $brokerHash = (Get-FileHash -LiteralPath "$unpacked/engines/folio/current/Folio.ContentHost.exe").Hash
+          if ($build.arcanaCommit -ne (git rev-parse HEAD) -or $build.folioCommit -ne $env:FOLIO_COMMIT -or $build.folioBrokerSha256 -ne $brokerHash) {
+            throw 'The extracted package does not match the qualified build.'
+          }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $legacySelection = & "$unpacked/Arcana.Cli.exe" snapshot about:blank --backend=obscura 2>&1
+          if ($LASTEXITCODE -eq 0 -or $legacySelection -notmatch 'supports only the Folio backend') {
+            throw 'The release package must reject Obscura backend selection.'
+          }
           $snapshot = & "$unpacked/Arcana.Cli.exe" snapshot https://httpbingo.org/html --folio-allow-origin=https://httpbingo.org
           if ($LASTEXITCODE) { throw 'The packaged Arcana executable failed its HTTPS smoke check.' }
           $page = $snapshot | ConvertFrom-Json
