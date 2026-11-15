@@ -44,7 +44,8 @@ if ($LASTEXITCODE) { throw 'Could not identify the Arcana source revision.' }
 $changed = git -C $repo status --porcelain --untracked-files=normal
 if ($LASTEXITCODE -or $changed) { throw 'Package Arcana from a clean source checkout.' }
 
-$stage = [IO.Directory]::CreateTempSubdirectory('arcana-package-').FullName
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('arcana-package-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
 try {
     $package = Join-Path $stage 'package'
     dotnet publish (Join-Path $repo 'src/Arcana.Cli/Arcana.Cli.csproj') -c Release -r win-x64 --self-contained true -p:ArcanaFolioOnly=true -o $package
