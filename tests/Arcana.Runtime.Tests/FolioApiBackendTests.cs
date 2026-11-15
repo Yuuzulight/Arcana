@@ -300,6 +300,17 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.OK, exportedResponse.StatusCode, await exportedResponse.Content.ReadAsStringAsync(timeout.Token));
         var exported = await exportedResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
 
+        using var sibling = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, sibling.StatusCode, await sibling.Content.ReadAsStringAsync(timeout.Token));
+        var siblingPage = await sibling.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
+        var siblingRoute = $"v1/pages/{siblingPage.GetProperty("pageId").GetString()}";
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage, siblingRoute))[2].ValueKind);
+        await Evaluate("(sessionStorage.setItem('arcana-test', 'sibling'), true)", siblingRoute);
+        Assert.AreEqual("session", (await Evaluate(readStorage))[2].GetString());
+        Assert.AreEqual("sibling", (await Evaluate(readStorage, siblingRoute))[2].GetString());
+        using var closedSibling = await client.DeleteAsync(siblingRoute, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, closedSibling.StatusCode);
+
         using var navigated = await client.PostAsJsonAsync($"{route}/navigate", new { url = secondOrigin + "/html" }, timeout.Token);
         Assert.IsTrue(navigated.IsSuccessStatusCode, await navigated.Content.ReadAsStringAsync(timeout.Token));
         var after = await Evaluate(readStorage);
@@ -332,13 +343,22 @@ public sealed class FolioApiBackendTests
         var replacementPage = await replacement.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
         route = $"v1/pages/{replacementPage.GetProperty("pageId").GetString()}";
         Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage))[1].ValueKind);
+        using var unsupportedCookies = await client.PutAsJsonAsync($"{route}/storage", new
+        {
+            origin = firstOrigin,
+            localStorage = new Dictionary<string, string> { ["arcana-test"] = "should-not-apply" },
+            sessionStorage = new Dictionary<string, string>(),
+            cookies = new[] { new { name = "fixture", value = "value" } }
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage))[1].ValueKind);
         using var restored = await client.PutAsJsonAsync($"{route}/storage", exported, timeout.Token);
         Assert.AreEqual(HttpStatusCode.OK, restored.StatusCode, await restored.Content.ReadAsStringAsync(timeout.Token));
         Assert.AreEqual(before.GetRawText(), (await Evaluate(readStorage)).GetRawText());
 
-        async Task<JsonElement> Evaluate(string expression)
+        async Task<JsonElement> Evaluate(string expression, string? pageRoute = null)
         {
-            using var response = await client.PostAsJsonAsync($"{route}/evaluate", new { expression }, timeout.Token);
+            using var response = await client.PostAsJsonAsync($"{pageRoute ?? route}/evaluate", new { expression }, timeout.Token);
             var json = await response.Content.ReadAsStringAsync(timeout.Token);
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
             return JsonSerializer.Deserialize<JsonElement>(json);
