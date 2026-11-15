@@ -399,7 +399,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                     const u8 = new Uint8Array(raw.length);
                     for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i);
                     let fileObj = null;
-                    try { fileObj = new File([u8], {{JsonSerializer.Serialize(fileName)}}); } catch {}
+                    try { fileObj = new File([u8], {{JsonSerializer.Serialize(fileName)}}); } catch (e) {}
                     if (!fileObj || !fileObj.name) {
                         fileObj = { name: {{JsonSerializer.Serialize(fileName)}}, size: u8.length, type: '' };
                     }
@@ -407,9 +407,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                     try {
                         dt = new DataTransfer();
                         dt.items.add(fileObj);
-                    } catch {}
+                    } catch (e) {}
                     if (dt && dt.files && dt.files.length > 0) {
-                        try { element.files = dt.files; } catch {
+                        try { element.files = dt.files; } catch (e) {
                             Object.defineProperty(element, 'files', { value: dt.files, configurable: true, writable: true });
                         }
                     } else {
