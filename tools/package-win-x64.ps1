@@ -29,8 +29,9 @@ Assert-Hash (Join-Path $folio 'Folio.ContentHost.exe') $manifest.executableSha25
 $fonts = Join-Path $folio 'fonts'
 $fontManifest = Join-Path $fonts 'SHA256SUMS'
 Assert-Hash $fontManifest $manifest.fontManifestSha256
-$fontPins = @(Get-Content -LiteralPath $fontManifest)
-if ($fontPins.Count -eq 0) { throw 'The Folio font manifest is empty.' }
+# Folio's manifest also records test fonts. Its production publish ships these families.
+$fontPins = @(Get-Content -LiteralPath $fontManifest | Where-Object { $_ -cmatch '^[0-9a-f]{64}  (SourceSans3|SourceCodePro|SourceSerif4|Noto)' })
+if ($fontPins.Count -ne 20) { throw 'The Folio production font manifest must record all 20 shipped faces.' }
 foreach ($pin in $fontPins) {
     if ($pin -cnotmatch '^([0-9a-f]{64})  ([A-Za-z0-9_.-]+\.(?:ttf|otf))$') {
         throw "Invalid Folio font manifest entry: $pin"
