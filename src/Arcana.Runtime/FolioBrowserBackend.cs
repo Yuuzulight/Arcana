@@ -176,7 +176,20 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
         public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default) => Unsupported<PageStorageState>("storage");
         public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default) => Unsupported("storage");
-        public Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default) => Unsupported<byte[]>("screenshot");
+        public async Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
+        {
+            if (format != "png") throw new NotSupportedException("The Folio broker supports PNG screenshots.");
+
+            using var response = await _broker.RequestAsync("screenshot", new { }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            var payload = response.RootElement;
+            if (!payload.TryGetProperty("mimeType", out var mimeType) || mimeType.ValueKind != JsonValueKind.String || mimeType.GetString() != "image/png" ||
+                !payload.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.String || !data.TryGetBytesFromBase64(out var bytes) ||
+                !bytes.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+                throw new InvalidOperationException("Folio broker returned an invalid PNG screenshot.");
+
+            return bytes;
+        }
         public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
         public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
@@ -216,6 +229,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     private sealed class BrokerConnection : IAsyncDisposable
     {
         private const int MaxResponseChars = 2 * 1024 * 1024;
+        // The 1280 × 720 RGBA viewport can exceed 4 MiB after PNG and base64 encoding.
+        private const int MaxScreenshotResponseChars = 8 * 1024 * 1024;
         private readonly Process _process;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private readonly BoundedLineReader _reader;
@@ -272,7 +287,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 var request = JsonSerializer.Serialize(fields, JsonOptions);
                 await _process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
                 await _process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
-                var line = await _reader.ReadLineAsync(MaxResponseChars, timeout.Token).ConfigureAwait(false)
+                var responseLimit = operation == "screenshot" ? MaxScreenshotResponseChars : MaxResponseChars;
+                var line = await _reader.ReadLineAsync(responseLimit, timeout.Token).ConfigureAwait(false)
                     ?? throw new IOException("Folio broker closed its response stream.");
                 var response = JsonDocument.Parse(line);
                 if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != id)

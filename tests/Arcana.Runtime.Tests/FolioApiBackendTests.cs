@@ -49,8 +49,16 @@ public sealed class FolioApiBackendTests
 
         using var unsupportedNavigation = await client.PostAsJsonAsync($"v1/pages/{id}/navigate", new { url = "https://example.com" }, timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedNavigation.StatusCode);
-        using var unsupportedScreenshot = await client.GetAsync($"v1/pages/{id}/screenshot", timeout.Token);
-        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedScreenshot.StatusCode);
+        using var screenshot = await client.GetAsync($"v1/pages/{id}/screenshot", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, screenshot.StatusCode);
+        Assert.AreEqual("image/png", screenshot.Content.Headers.ContentType?.MediaType);
+        var png = await screenshot.Content.ReadAsByteArrayAsync(timeout.Token);
+        Assert.IsTrue(png.Length > 33);
+        CollectionAssert.AreEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, png[..8]);
+        Assert.IsTrue(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(16, 4)) > 0);
+        Assert.IsTrue(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20, 4)) > 0);
+        using var unsupportedJpeg = await client.GetAsync($"v1/pages/{id}/screenshot?format=jpeg", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedJpeg.StatusCode);
         using var unsupportedCookies = await client.GetAsync($"v1/pages/{id}/cookies", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
         using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
