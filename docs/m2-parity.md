@@ -35,4 +35,4 @@ The scheduled workflow [obscura-pin-bump.yml](../.github/workflows/obscura-pin-b
 | [#8](https://github.com/Yuuzulight/Arcana/issues/8) | Amazon 202 "Server Busy" (bot detection) | Handoff / Fallback | Anti-bot / bot-challenge surfaces route to user handoff or OS default browser (per M4 acceptance decisions). |
 | [#9](https://github.com/Yuuzulight/Arcana/issues/9) | GitHub repository page load timing | Pass (2.47s–3.70s) | Did not reproduce on direct API path across multiple fresh runs (3.70s, 2.50s, 2.47s including process startup and snapshot). Closed as resolved for direct path. |
 
-The 72-hour unexplained-fallback exit criterion remains an operational follow-up: collect three days of unattended Mana runs after this integration branch is merged, with no unexplained Edge fallback. Clean fallback evidence is required before passing the soak.
+The 72-hour unattended soak is outside the Arcana 1.0 release criteria. Record fallback behavior and reasons during release-candidate parity checks.

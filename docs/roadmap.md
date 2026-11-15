@@ -21,7 +21,7 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 
 ## M2: Parity on real flows, and dependability
 
-**Status: Parity comparison complete; soak runner hardened.**
+**Status: Obscura parity comparison documented. Folio release-candidate parity remains open.**
 
 - Run Mana's real flows through the API and compare them with Edge.
 - Recheck the Obscura 0.2.1 gaps, including missing links and script text.
@@ -29,7 +29,7 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 - Schedule newest-main builds, contract tests, and pin-bump pull requests.
 - Add clear failure reasons and network-idle waits for single-page apps.
 
-Exit condition: a working/different/failing table exists with an issue for every failure, followed by 72 hours without unexplained Edge fallback. Gap dispositions are documented in [m2-parity.md](m2-parity.md); soak evaluation logic in Mana #1535 requires clean fallback evidence.
+Exit condition: a working/different/failing table exists with an issue for every failure. Gap dispositions are documented in [m2-parity.md](m2-parity.md). The 72-hour unattended soak is outside the Arcana 1.0 release criteria.
 
 ## M3: Live view, approvals, annotate
 
@@ -58,8 +58,7 @@ and credential persistence remain intentionally outside the agent path.
 ## Release signing — Postponed
 
 Code-signing certificates and signed release artifacts are deliberately deferred.
-This does not block M3/M4 functionality or the Obscura-backed soak; revisit it
-before distributing a signed release installer.
+Revisit signing before distributing a signed release installer.
 
 ## M5: The Folio engine
 
