@@ -16,25 +16,35 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     private readonly string _brokerExecutable;
     private readonly string[] _allowedOrigins;
     private readonly string? _profileDirectory;
+    private readonly bool _allowPrivateNetwork;
     private readonly ConcurrentDictionary<string, FolioPageBackend> _pages = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    public FolioBrowserBackend(string brokerExecutable, IEnumerable<string>? allowedOrigins = null, string? profileDirectory = null)
+    public FolioBrowserBackend(string brokerExecutable, IEnumerable<string>? allowedOrigins = null, string? profileDirectory = null, bool allowPrivateNetwork = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
         _brokerExecutable = Path.GetFullPath(brokerExecutable);
         _allowedOrigins = allowedOrigins?.ToArray() ?? [];
         _profileDirectory = profileDirectory;
+        _allowPrivateNetwork = allowPrivateNetwork;
         foreach (var origin in _allowedOrigins)
         {
-            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
-                uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            if (origin.Equals("https://*", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+                uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+                (uri.Scheme != Uri.UriSchemeHttps && !(allowPrivateNetwork && uri.Scheme == Uri.UriSchemeHttp && IsLoopbackHost(uri.Host))))
                 throw new ArgumentException("Folio allowed origins must be HTTPS origins or path prefixes without credentials, query, or fragment.", nameof(allowedOrigins));
         }
         if (!File.Exists(_brokerExecutable)) throw new FileNotFoundException("The Folio content broker executable was not found.", _brokerExecutable);
     }
 
-    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options), options.FolioAllowedOrigins, options.ProfileDirectory) { }
+    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options), options.FolioAllowedOrigins, options.ProfileDirectory, options.AllowPrivateNetwork) { }
+
+    private static bool IsLoopbackHost(string host)
+        => host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+           host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+           host.Equals("::1", StringComparison.OrdinalIgnoreCase) ||
+           host.Equals("[::1]", StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveBrokerPath(ArcanaOptions options)
     {
@@ -49,7 +59,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     public async Task VerifyStartupAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, cancellationToken).ConfigureAwait(false);
+        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, _allowPrivateNetwork, cancellationToken).ConfigureAwait(false);
         await broker.CloseAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -78,7 +88,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var id = Guid.NewGuid().ToString("N");
-        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
+        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, _allowPrivateNetwork, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
         if (!_pages.TryAdd(id, page))
         {
             await page.CloseAsync(CancellationToken.None).ConfigureAwait(false);
@@ -119,12 +129,13 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         private readonly BrokerConnection _broker;
         private readonly bool _navigationEnabled;
         private readonly SemaphoreSlim _navigationGate = new(1, 1);
+        private readonly ConcurrentDictionary<CdpSubscription, byte> _subscriptions = new();
         private readonly List<NavigationEntry> _history = [];
         private int _historyIndex = -1;
         private string _referencePrefix = Guid.NewGuid().ToString("N") + ":";
 
         private sealed record NavigationEntry(string Url, string? Html = null);
-        private bool _closed;
+        private int _closed;
 
         internal int BrokerProcessId => _broker.ProcessId;
 
@@ -132,6 +143,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             _broker = broker;
             _navigationEnabled = navigationEnabled;
+            _broker.EventReceived += PublishEvent;
             Url = "about:blank";
         }
 
@@ -140,10 +152,10 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public string CurrentUrl => Url;
         public string Title { get; private set; } = "";
 
-        public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string? profileDirectory, string url, CancellationToken cancellationToken)
+        public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string? profileDirectory, bool allowPrivateNetwork, string url, CancellationToken cancellationToken)
         {
-            var connection = await BrokerConnection.StartAsync(executable, allowedOrigins, profileDirectory, cancellationToken).ConfigureAwait(false);
-            var page = new FolioPageBackend(connection, allowedOrigins.Length > 0);
+            var connection = await BrokerConnection.StartAsync(executable, allowedOrigins, profileDirectory, allowPrivateNetwork, cancellationToken).ConfigureAwait(false);
+            var page = new FolioPageBackend(connection, allowedOrigins.Length > 0 || allowPrivateNetwork);
             try
             {
                 await page.NavigateAndWaitAsync(url, cancellationToken).ConfigureAwait(false);
@@ -186,7 +198,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 Title = pageSnapshot.Title;
                 return pageSnapshot with
                 {
-                    Elements = pageSnapshot.Elements.Select(element => element with { Reference = _referencePrefix + element.Reference }).ToArray()
+                    Elements = pageSnapshot.Elements.Select(element => element with { Reference = FormatClientReference(element.Reference) }).ToArray()
                 };
             }
             finally { _navigationGate.Release(); }
@@ -256,11 +268,38 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default) =>
-            Task.FromException(new NotSupportedException("Folio network-idle waiting is not supported by the Folio broker."));
+        public async Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default)
+        {
+            using var response = await _broker.RequestAsync("wait-network-idle", new { timeoutMs }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+        }
 
-        public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
-        public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
+        public async Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default)
+        {
+            using var response = await _broker.RequestAsync("get-cookies", new { url = Url == "about:blank" ? null : Url }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            var cookies = response.RootElement.TryGetProperty("cookies", out var found)
+                ? found.Clone()
+                : JsonSerializer.SerializeToElement(Array.Empty<object>(), JsonOptions);
+            return JsonSerializer.SerializeToElement(new { cookies }, JsonOptions);
+        }
+
+        public async Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(cookies);
+            using var response = await _broker.RequestAsync("set-cookies", new { cookies, url = Url == "about:blank" ? null : Url }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            return JsonSerializer.SerializeToElement(new { ok = true }, JsonOptions);
+        }
+
+        public async Task SetInterceptionAsync(JsonElement rules, CancellationToken cancellationToken = default)
+        {
+            var payloadRules = rules.ValueKind == JsonValueKind.Array
+                ? rules.Clone()
+                : JsonSerializer.SerializeToElement(Array.Empty<object>(), JsonOptions);
+            using var response = await _broker.RequestAsync("set-interception", new { rules = payloadRules }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+        }
         public async Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default)
         {
             var local = await EvaluateAsync("""
@@ -321,7 +360,24 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             return bytes;
         }
         public Task<JsonElement> SendCdpAsync(string method, object? parameters = null, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("CDP");
-        public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256) => throw new NotSupportedException("Folio event subscriptions are not supported in this slice.");
+
+        public IArcanaEventSubscription Subscribe(string? method = null, int capacity = 256)
+        {
+            var subscription = new CdpSubscription(method, null, capacity, sub => _subscriptions.TryRemove(sub, out _));
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                subscription.Complete();
+                return subscription;
+            }
+            _subscriptions[subscription] = 0;
+            return subscription;
+        }
+
+        private void PublishEvent(CdpEvent evt)
+        {
+            foreach (var sub in _subscriptions.Keys)
+                sub.Publish(evt);
+        }
         public Task<JsonElement> CloseAsync(CancellationToken cancellationToken = default) => CloseCoreAsync(cancellationToken);
         public async Task<JsonElement> ReloadAsync(CancellationToken cancellationToken = default)
         {
@@ -352,11 +408,32 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             finally { _navigationGate.Release(); }
         }
 
-        public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("viewport changes");
-        public async Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default)
+        public async Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default)
+        {
+            if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+            using var response = await _broker.RequestAsync("viewport", new { width, height }, cancellationToken).ConfigureAwait(false);
+            EnsureSuccess(response);
+            return JsonSerializer.SerializeToElement(new { ok = true }, JsonOptions);
+        }
+
+        public async Task ClickAtAsync(double x, double y, string button = "left", int clickCount = 1, CancellationToken cancellationToken = default)
         {
             if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
-            await SendInputAsync("click-at", new { x, y }, cancellationToken).ConfigureAwait(false);
+            if (button is not ("left" or "right" or "middle")) throw new ArgumentException("Mouse button must be left, right, or middle.", nameof(button));
+            if (clickCount is < 1 or > 3) throw new ArgumentOutOfRangeException(nameof(clickCount));
+            await SendInputAsync("click-at", new { x, y, button, clickCount }, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task HoverAsync(string reference, CancellationToken cancellationToken = default)
+        {
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var brokerRef = ResolveBrokerReference(reference);
+                using var response = await _broker.RequestAsync("hover", new { reference = brokerRef }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
+            }
+            finally { _navigationGate.Release(); }
         }
 
         public async Task PressKeyAsync(string key, CancellationToken cancellationToken = default)
@@ -385,144 +462,103 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(reference);
             ArgumentException.ThrowIfNullOrWhiteSpace(path);
-            if (!File.Exists(path)) throw new FileNotFoundException("Upload file was not found.", path);
-            var fileName = Path.GetFileName(path);
-            var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-            var base64 = Convert.ToBase64String(bytes);
+            var fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath)) throw new FileNotFoundException("Upload file was not found.", path);
             await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await RunReferenceActionAsync(reference, $$"""
-                    if (element.tagName !== 'INPUT' || (element.type || '').toLowerCase() !== 'file')
-                        throw new Error('Element is not a file input.');
-                    const raw = atob({{JsonSerializer.Serialize(base64)}});
-                    const u8 = new Uint8Array(raw.length);
-                    for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i);
-                    let fileObj = null;
-                    if (typeof File === 'function') {
-                        try { fileObj = new File([u8], {{JsonSerializer.Serialize(fileName)}}); } catch (e) {}
-                    }
-                    if (!fileObj || !fileObj.name) {
-                        fileObj = { name: {{JsonSerializer.Serialize(fileName)}}, size: u8.length, type: '' };
-                    }
-                    let dt = null;
-                    if (typeof DataTransfer === 'function') {
-                        try {
-                            dt = new DataTransfer();
-                            dt.items.add(fileObj);
-                        } catch (e) {}
-                    }
-                    if (dt && dt.files && dt.files.length > 0) {
-                        try { element.files = dt.files; } catch (e) {
-                            Object.defineProperty(element, 'files', { value: dt.files, configurable: true, writable: true });
-                        }
-                    } else {
-                        const fileList = [fileObj];
-                        fileList.item = function(i) { return fileList[i] || null; };
-                        Object.defineProperty(element, 'files', { value: fileList, configurable: true, writable: true });
-                    }
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
-                    """, cancellationToken).ConfigureAwait(false);
+                var brokerRef = ResolveBrokerReference(reference);
+                using var response = await _broker.RequestAsync("upload", new { reference = brokerRef, paths = new[] { fullPath } }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
             }
             finally { _navigationGate.Release(); }
         }
+
         public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
         {
             await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var bounds = await RunReferenceActionAsync(reference, """
-                    const rect = element.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0 ? [rect.left + rect.width / 2, rect.top + rect.height / 2] : [];
-                    """, cancellationToken).ConfigureAwait(false);
-                if (bounds.GetArrayLength() != 2)
-                    throw new InvalidOperationException("The referenced element has no clickable bounds.");
-                await ClickAtAsync(bounds[0].GetDouble(), bounds[1].GetDouble(), cancellationToken).ConfigureAwait(false);
+                var brokerRef = ResolveBrokerReference(reference);
+                var previousUrl = Url;
+                using var response = await _broker.RequestAsync("click", new { reference = brokerRef }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
+                await UpdateSnapshotMetadataAsync(cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(previousUrl, Url, StringComparison.Ordinal))
+                {
+                    _referencePrefix = Guid.NewGuid().ToString("N") + ":";
+                    _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1);
+                    _history.Add(new NavigationEntry(Url));
+                    _historyIndex = _history.Count - 1;
+                }
             }
             finally { _navigationGate.Release(); }
         }
 
         public async Task FillAsync(string reference, string value, CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(value);
             await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                ArgumentNullException.ThrowIfNull(value);
-                await RunReferenceActionAsync(reference, $$"""
-                    if (element.readOnly || element.hasAttribute('readonly')) throw new Error('Element is read-only.');
-                    const value = {{JsonSerializer.Serialize(value)}};
-                    if (element.tagName === 'TEXTAREA' || (element.tagName === 'INPUT' &&
-                        ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(element.type))) {
-                        element.focus();
-                        element.value = value;
-                    } else if (element.getAttribute('contenteditable') === 'true') {
-                        element.focus();
-                        element.textContent = value;
-                    } else {
-                        throw new Error('Element is not a supported text control.');
-                    }
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
-                    """, cancellationToken).ConfigureAwait(false);
+                var brokerRef = ResolveBrokerReference(reference);
+                using var response = await _broker.RequestAsync("fill", new { reference = brokerRef, value }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
             }
             finally { _navigationGate.Release(); }
         }
 
         public async Task SelectOptionAsync(string reference, string value, CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(value);
             await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                ArgumentNullException.ThrowIfNull(value);
-                await RunReferenceActionAsync(reference, $$"""
-                    if (element.tagName !== 'SELECT') throw new Error('Element is not a select.');
-                    const value = {{JsonSerializer.Serialize(value)}};
-                    const option = Array.from(element.options).find(function(o) { return o.value === value || o.textContent.trim() === value; });
-                    if (!option || option.disabled || option.parentElement?.disabled) throw new Error('Option unavailable.');
-                    element.value = option.value;
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
-                    """, cancellationToken).ConfigureAwait(false);
+                var brokerRef = ResolveBrokerReference(reference);
+                using var response = await _broker.RequestAsync("select", new { reference = brokerRef, value }, cancellationToken).ConfigureAwait(false);
+                EnsureSuccess(response);
             }
             finally { _navigationGate.Release(); }
         }
 
-        private Task<JsonElement> RunReferenceActionAsync(string reference, string action, CancellationToken cancellationToken)
+        private string FormatClientReference(string brokerRef)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-            if (!reference.StartsWith(_referencePrefix, StringComparison.Ordinal))
-                throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
-            var brokerReference = reference[_referencePrefix.Length..];
-            return EvaluateAsync($$"""
-                (() => {
-                    const reference = {{JsonSerializer.Serialize(brokerReference)}};
-                    const element = Array.from(document.querySelectorAll('[data-folio-ref]'))
-                        .find(function(candidate) { return candidate.getAttribute('data-folio-ref') === reference; });
-                    if (!element) throw new Error('Stale element reference; capture a new snapshot.');
-                    if (element.disabled || element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
-                        throw new Error('Element is disabled.');
-                    for (let node = element; node; node = node.parentElement) {
-                        const style = getComputedStyle(node);
-                        if (node.hasAttribute('hidden') || node.hasAttribute('inert') ||
-                            node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
-                            style.visibility === 'hidden' || style.visibility === 'collapse') throw new Error('Element is hidden.');
-                    }
-                    {{action}}
-                })()
-                """, cancellationToken);
+            if (brokerRef.Length > 3 && brokerRef[0] == 'f')
+            {
+                var marker = brokerRef.IndexOf("e-", StringComparison.Ordinal);
+                if (marker > 1 && int.TryParse(brokerRef.AsSpan(1, marker - 1), out _))
+                    return string.Concat(brokerRef.AsSpan(0, marker), "e_", _referencePrefix, brokerRef.AsSpan(marker + 2));
+            }
+            return _referencePrefix + brokerRef;
         }
 
-        private static Task Unsupported(string feature) => Task.FromException(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));
+        private string ResolveBrokerReference(string reference)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+            if (reference.StartsWith("f", StringComparison.Ordinal))
+            {
+                var marker = reference.IndexOf("e_", StringComparison.Ordinal);
+                if (marker > 1 && int.TryParse(reference.AsSpan(1, marker - 1), out _))
+                {
+                    var rest = reference.AsSpan(marker + 2);
+                    if (!rest.StartsWith(_referencePrefix, StringComparison.Ordinal))
+                        throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
+                    return string.Concat(reference.AsSpan(0, marker), "e-", rest[_referencePrefix.Length..]);
+                }
+            }
+            if (!reference.StartsWith(_referencePrefix, StringComparison.Ordinal))
+                throw new InvalidOperationException("Stale element reference; capture a new snapshot.");
+            return reference[_referencePrefix.Length..];
+        }
+
         private static Task<T> Unsupported<T>(string feature) => Task.FromException<T>(new NotSupportedException($"Folio {feature} is not supported in this offline fixture slice."));
 
         private async Task<JsonElement> CloseCoreAsync(CancellationToken cancellationToken)
         {
-            if (_closed) return JsonSerializer.SerializeToElement(new { ok = true });
-            _closed = true;
+            if (Interlocked.Exchange(ref _closed, 1) != 0) return JsonSerializer.SerializeToElement(new { ok = true });
+            _broker.EventReceived -= PublishEvent;
+            foreach (var sub in _subscriptions.Keys.ToArray())
+                sub.Complete();
             try
             {
                 return await _broker.CloseAsync(cancellationToken).ConfigureAwait(false);
@@ -544,6 +580,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         private readonly Process _process;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private readonly BoundedLineReader _reader;
+        private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonDocument>> _pending = new(StringComparer.Ordinal);
+        private readonly CancellationTokenSource _readCts = new();
+        private readonly Task _readLoopTask;
         private long _nextId;
         private int _disposed;
         private int _terminated;
@@ -553,16 +592,21 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             _process = process;
             _reader = new BoundedLineReader(process.StandardOutput);
             _ = process.StandardError.ReadToEndAsync();
+            _readLoopTask = Task.Run(ReadLoopAsync);
         }
 
         internal int ProcessId => _process.Id;
+        public event Action<CdpEvent>? EventReceived;
 
         public static Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken) =>
-            StartAsync(executable, allowedOrigins, null, cancellationToken);
+            StartAsync(executable, allowedOrigins, null, false, cancellationToken);
 
-        public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, string? profileDirectory, CancellationToken cancellationToken = default)
+        public static Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, string? profileDirectory, CancellationToken cancellationToken = default) =>
+            StartAsync(executable, allowedOrigins, profileDirectory, false, cancellationToken);
+
+        public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, string? profileDirectory, bool allowPrivateNetwork, CancellationToken cancellationToken = default)
         {
-            var startInfo = CreateStartInfo(executable, allowedOrigins, profileDirectory);
+            var startInfo = CreateStartInfo(executable, allowedOrigins, profileDirectory, allowPrivateNetwork);
             var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start the Folio broker.");
             var connection = new BrokerConnection(process);
             try
@@ -572,7 +616,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 if (!hello.RootElement.TryGetProperty("sandboxed", out var sandboxed) || sandboxed.ValueKind != JsonValueKind.True)
                     throw new InvalidOperationException("Folio broker did not confirm its sandboxed content process.");
                 var networkEnabled = hello.RootElement.TryGetProperty("networkEnabled", out var network) && network.ValueKind == JsonValueKind.True;
-                if (networkEnabled != (allowedOrigins.Length > 0))
+                if (networkEnabled != (allowedOrigins.Length > 0 || allowPrivateNetwork))
                     throw new InvalidOperationException("Folio broker did not confirm the requested network policy.");
                 return connection;
             }
@@ -583,62 +627,131 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             }
         }
 
+        private async Task ReadLoopAsync()
+        {
+            Exception streamError = new IOException("Folio broker closed its response stream.");
+            try
+            {
+                while (!_readCts.IsCancellationRequested)
+                {
+                    var line = await _reader.ReadLineAsync(MaxScreenshotResponseChars, _readCts.Token).ConfigureAwait(false);
+                    if (line is null) break;
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var doc = JsonDocument.Parse(line);
+                    var transferred = false;
+                    try
+                    {
+                        if (doc.RootElement.TryGetProperty("id", out var responseIdProp) &&
+                            responseIdProp.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+                        {
+                            var responseId = responseIdProp.ValueKind == JsonValueKind.String
+                                ? responseIdProp.GetString()
+                                : responseIdProp.GetRawText();
+                            if (responseId is not null && _pending.TryRemove(responseId, out var tcs))
+                                transferred = tcs.TrySetResult(doc);
+                        }
+                        else if (doc.RootElement.TryGetProperty("event", out var eventProp) &&
+                            eventProp.ValueKind == JsonValueKind.String)
+                        {
+                            var eventName = eventProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(eventName))
+                            {
+                                try { EventReceived?.Invoke(new CdpEvent(eventName, doc.RootElement.Clone(), null)); }
+                                catch { }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (!transferred) doc.Dispose();
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (_readCts.IsCancellationRequested)
+            {
+                streamError = new IOException("Folio broker connection was closed.");
+            }
+            catch (Exception error)
+            {
+                streamError = error;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _terminated, 1);
+                foreach (var key in _pending.Keys.ToArray())
+                {
+                    if (_pending.TryRemove(key, out var tcs))
+                        tcs.TrySetException(streamError);
+                }
+            }
+        }
+
         public async Task<JsonDocument> RequestAsync(string operation, object payload, CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            cancellationToken.ThrowIfCancellationRequested();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(35));
-            try { await _gate.WaitAsync(timeout.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException("Timed out waiting to send a Folio broker request.");
-            }
-
+            var id = Interlocked.Increment(ref _nextId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var registered = false;
             try
             {
-                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _terminated) != 0, this);
-                var id = Interlocked.Increment(ref _nextId).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                using var payloadDocument = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
-                var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                await _gate.WaitAsync(timeout.Token).ConfigureAwait(false);
+                try
                 {
-                    ["id"] = JsonSerializer.SerializeToElement(id),
-                    ["op"] = JsonSerializer.SerializeToElement(operation)
-                };
-                foreach (var property in payloadDocument.RootElement.EnumerateObject()) fields[property.Name] = property.Value.Clone();
-                var request = JsonSerializer.Serialize(fields, JsonOptions);
-                await _process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
-                await _process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
-                var responseLimit = operation == "screenshot" ? MaxScreenshotResponseChars : MaxResponseChars;
-                var line = await _reader.ReadLineAsync(responseLimit, timeout.Token).ConfigureAwait(false)
-                    ?? throw new IOException("Folio broker closed its response stream.");
-                var response = JsonDocument.Parse(line);
-                if (!response.RootElement.TryGetProperty("id", out var responseId) || responseId.GetString() != id)
-                {
-                    response.Dispose();
-                    throw new InvalidDataException("Folio broker returned a response for a different request.");
+                    ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _terminated) != 0, this);
+                    _pending[id] = tcs;
+                    registered = true;
+                    using var payloadDocument = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
+                    var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["id"] = JsonSerializer.SerializeToElement(id),
+                        ["op"] = JsonSerializer.SerializeToElement(operation)
+                    };
+                    foreach (var property in payloadDocument.RootElement.EnumerateObject()) fields[property.Name] = property.Value.Clone();
+                    var request = JsonSerializer.Serialize(fields, JsonOptions);
+                    await _process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
+                    await _process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
                 }
+                finally { _gate.Release(); }
+
+                var response = await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
                 if (operation == "close") Interlocked.Exchange(ref _terminated, 1);
                 return response;
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                Interlocked.Exchange(ref _terminated, 1);
-                await KillAsync().ConfigureAwait(false);
+                if (registered)
+                {
+                    Interlocked.Exchange(ref _terminated, 1);
+                    await KillAsync().ConfigureAwait(false);
+                }
                 throw new TimeoutException("Folio broker request timed out.");
             }
             catch (OperationCanceledException)
             {
-                Interlocked.Exchange(ref _terminated, 1);
-                await KillAsync().ConfigureAwait(false);
+                if (registered)
+                {
+                    Interlocked.Exchange(ref _terminated, 1);
+                    await KillAsync().ConfigureAwait(false);
+                }
                 throw;
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ObjectDisposedException)
             {
-                Interlocked.Exchange(ref _terminated, 1);
-                await KillAsync().ConfigureAwait(false);
+                if (registered)
+                {
+                    Interlocked.Exchange(ref _terminated, 1);
+                    await KillAsync().ConfigureAwait(false);
+                }
                 throw;
             }
-            finally { _gate.Release(); }
+            finally
+            {
+                if (registered && _pending.TryRemove(id, out var removed) && removed.Task.IsCompletedSuccessfully)
+                    removed.Task.Result.Dispose();
+            }
         }
 
         public async Task<JsonElement> CloseAsync(CancellationToken cancellationToken)
@@ -660,12 +773,16 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             Interlocked.Exchange(ref _terminated, 1);
+            try { _readCts.Cancel(); } catch (ObjectDisposedException) { }
             if (!_process.HasExited)
             {
                 try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
                 catch (TimeoutException) { await KillAsync().ConfigureAwait(false); }
                 catch (InvalidOperationException) { }
             }
+            try { await _readLoopTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            catch { }
+            _readCts.Dispose();
             _process.Dispose();
         }
 
@@ -679,7 +796,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
         }
 
-        private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins, string? profileDirectory)
+        private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins, string? profileDirectory, bool allowPrivateNetwork)
         {
             var path = Path.GetFullPath(executable);
             var isAssembly = Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase);
@@ -695,11 +812,18 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             if (isAssembly) startInfo.ArgumentList.Add(path);
             startInfo.ArgumentList.Add("--broker");
             startInfo.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
+            startInfo.ArgumentList.Add("--stream-events");
+            if (allowPrivateNetwork) startInfo.ArgumentList.Add("--allow-private-network");
             foreach (var origin in allowedOrigins) startInfo.ArgumentList.Add($"--allow-origin={origin}");
             if (!string.IsNullOrWhiteSpace(profileDirectory))
             {
                 Directory.CreateDirectory(profileDirectory);
                 startInfo.Environment["FOLIO_STORAGE_PATH"] = Path.Combine(Path.GetFullPath(profileDirectory), "local-storage.json");
+                startInfo.Environment["FOLIO_DOWNLOADS_DIR"] = Path.Combine(Path.GetFullPath(profileDirectory), "downloads");
+            }
+            else
+            {
+                startInfo.Environment["FOLIO_DOWNLOADS_DIR"] = Path.Combine(Path.GetTempPath(), "arcana-folio-downloads", Guid.NewGuid().ToString("N"));
             }
             return startInfo;
         }

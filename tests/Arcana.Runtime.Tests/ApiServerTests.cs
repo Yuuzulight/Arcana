@@ -61,7 +61,9 @@ public sealed class ApiServerTests
         public Task<bool> GoForwardAsync(CancellationToken cancellationToken = default) => Unsupported<bool>();
         public Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default) => Unsupported();
         public Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
-        public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported();
+        public Task ClickAtAsync(double x, double y, string button = "left", int clickCount = 1, CancellationToken cancellationToken = default) => Unsupported();
+        public Task HoverAsync(string reference, CancellationToken cancellationToken = default) => Unsupported();
+        public Task SetInterceptionAsync(JsonElement rules, CancellationToken cancellationToken = default) => Unsupported();
         public Task PressKeyAsync(string key, CancellationToken cancellationToken = default) => Unsupported();
         public Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();
         public Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default) => Unsupported<JsonElement>();

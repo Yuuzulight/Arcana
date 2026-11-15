@@ -37,7 +37,10 @@ public interface IArcanaPageBackend
     Task<bool> GoForwardAsync(CancellationToken cancellationToken = default);
     Task WaitForNetworkIdleAsync(int timeoutMs, CancellationToken cancellationToken = default);
     Task<JsonElement> SetViewportAsync(int width, int height, CancellationToken cancellationToken = default);
-    Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default);
+    Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) => ClickAtAsync(x, y, "left", 1, cancellationToken);
+    Task ClickAtAsync(double x, double y, string button, int clickCount = 1, CancellationToken cancellationToken = default);
+    Task HoverAsync(string reference, CancellationToken cancellationToken = default);
+    Task SetInterceptionAsync(JsonElement rules, CancellationToken cancellationToken = default);
     Task PressKeyAsync(string key, CancellationToken cancellationToken = default);
     Task<JsonElement> TypeTextAsync(string text, CancellationToken cancellationToken = default);
     Task<JsonElement> ScrollAsync(double x, double y, CancellationToken cancellationToken = default);

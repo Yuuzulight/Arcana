@@ -148,6 +148,9 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         if (body?.Html is not null && body.Url is not null && body.Url != "about:blank")
             throw new ArgumentException("inline HTML can only be loaded at about:blank.");
         var page = await _browser.NewPageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        // Capture from before the document loads, so output a page logs while it loads is kept.
+        var id = Guid.NewGuid().ToString("N");
+        StartLogCapture(id, page);
         try
         {
             // Inline about:blank documents have no cookie origin. Existing profile
@@ -161,12 +164,11 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         }
         catch
         {
+            StopLogCapture(id);
             try { await page.CloseAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             throw;
         }
-        var id = Guid.NewGuid().ToString("N");
         _pages[id] = page;
-        StartLogCapture(id, page);
         await JsonAsync(context.Response, 201, new { pageId = id, url = page.CurrentUrl ?? body?.Url ?? "about:blank" });
     }
 
@@ -261,11 +263,16 @@ public sealed class ArcanaApiServer : IAsyncDisposable
                 }
                 throw new TimeoutException($"Wait condition timed out after {timeoutMs} ms.");
             case "viewport": await page.SetViewportAsync(body.Width, body.Height, cancellationToken); break;
-            case "click-at": await page.ClickAtAsync(body.X, body.Y, cancellationToken); break;
+            case "click-at": await page.ClickAtAsync(body.X, body.Y, body.Button ?? "left", body.ClickCount ?? 1, cancellationToken); break;
+            case "hover": await page.HoverAsync(body.Ref ?? throw new ArgumentException("ref is required."), cancellationToken); break;
+            case "route": await page.SetInterceptionAsync(body.Rules ?? default, cancellationToken); break;
             case "key": await page.PressKeyAsync(body.Key ?? throw new ArgumentException("key is required."), cancellationToken); break;
             case "type": await page.TypeTextAsync(body.Value ?? "", cancellationToken); break;
             case "mouse-wheel": await page.ScrollAsync(body.DeltaX, body.DeltaY, cancellationToken); break;
-            case "upload": await page.UploadFileAsync(body.Ref ?? throw new ArgumentException("ref is required."), body.Path ?? throw new ArgumentException("path is required."), cancellationToken); break;
+            case "upload":
+                var uploadPath = body.Path ?? (body.Paths is { Length: > 0 } ? body.Paths[0] : null) ?? throw new ArgumentException("path is required.");
+                await page.UploadFileAsync(body.Ref ?? throw new ArgumentException("ref is required."), uploadPath, cancellationToken);
+                break;
             case "navigate": await page.NavigateAndWaitAsync(body.Url ?? throw new ArgumentException("url is required."), cancellationToken); break;
             case "back": await page.GoBackAsync(cancellationToken); break;
             case "forward": await page.GoForwardAsync(cancellationToken); break;
@@ -459,6 +466,7 @@ public sealed class ArcanaApiServer : IAsyncDisposable
 
     private sealed record CreateRequest(string? Url, string? Html = null);
     private sealed record ActionRequest(string? Url = null, string? Ref = null, string? Value = null, string? Condition = null, string? Key = null, string? Expression = null, string? Path = null,
-        int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0, int? TimeoutMs = null);
+        int Width = 1280, int Height = 720, double X = 0, double Y = 0, double DeltaX = 0, double DeltaY = 0, int? TimeoutMs = null,
+        string? Button = null, int? ClickCount = null, string[]? Paths = null, JsonElement? Rules = null);
     private sealed record CdpRequest(string? Method, JsonElement Parameters);
 }

@@ -141,12 +141,40 @@ public sealed partial class ArcanaPage
     public Task<JsonElement> SetHeadersAsync(IReadOnlyDictionary<string, string> headers, CancellationToken cancellationToken = default) =>
         SendCdpAsync("Network.setExtraHTTPHeaders", new { headers }, cancellationToken);
 
-    public async Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default)
+    public Task ClickAtAsync(double x, double y, CancellationToken cancellationToken = default) =>
+        ClickAtAsync(x, y, "left", 1, cancellationToken);
+
+    public async Task ClickAtAsync(double x, double y, string button, int clickCount = 1, CancellationToken cancellationToken = default)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentOutOfRangeException(nameof(x));
-        await SendCdpAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button = "left", clickCount = 1 }, cancellationToken).ConfigureAwait(false);
-        await SendCdpAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", clickCount = 1 }, cancellationToken).ConfigureAwait(false);
+        if (button is not ("left" or "right" or "middle")) throw new ArgumentException("Mouse button must be left, right, or middle.", nameof(button));
+        if (clickCount is < 1 or > 3) throw new ArgumentOutOfRangeException(nameof(clickCount));
+        for (var count = 1; count <= clickCount; count++)
+        {
+            await SendCdpAsync("Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button, clickCount = count }, cancellationToken).ConfigureAwait(false);
+            await SendCdpAsync("Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button, clickCount = count }, cancellationToken).ConfigureAwait(false);
+        }
     }
+
+    public async Task HoverAsync(string reference, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        var center = await EvaluateAsync($$"""
+            (() => {
+                const ref = {{JsonSerializer.Serialize(reference)}};
+                const el = document.querySelector(`[aria-ref="${CSS.escape(ref)}"]`) || document.querySelector(`[data-folio-ref="${CSS.escape(ref)}"]`);
+                if (!el) return null;
+                el.scrollIntoView({ block: 'center', inline: 'center' });
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 || rect.height > 0 ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+            })()
+            """, cancellationToken).ConfigureAwait(false);
+        if (center.ValueKind != JsonValueKind.Object || !center.TryGetProperty("x", out var xProp) || !center.TryGetProperty("y", out var yProp))
+            throw new InvalidOperationException("Referenced element is unavailable for hover.");
+        await SendCdpAsync("Input.dispatchMouseEvent", new { type = "mouseMoved", x = xProp.GetDouble(), y = yProp.GetDouble() }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task SetInterceptionAsync(JsonElement rules, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     public async Task PressKeyAsync(string key, CancellationToken cancellationToken = default)
     {

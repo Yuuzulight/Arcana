@@ -141,10 +141,10 @@ public sealed class FolioApiBackendTests
         Assert.IsTrue(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20, 4)) > 0);
         using var unsupportedJpeg = await client.GetAsync($"v1/pages/{id}/screenshot?format=jpeg", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedJpeg.StatusCode);
-        using var unsupportedCookies = await client.GetAsync($"v1/pages/{id}/cookies", timeout.Token);
-        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
-        using var unsupportedLogs = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
-        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedLogs.StatusCode);
+        using var cookiesResponse = await client.GetAsync($"v1/pages/{id}/cookies", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, cookiesResponse.StatusCode);
+        using var logsResponse = await client.GetAsync($"v1/pages/{id}/logs", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, logsResponse.StatusCode);
         using var newSnapshot = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{id}/snapshot", timeout.Token));
         Assert.AreNotEqual(previousReference, newSnapshot.RootElement.GetProperty("elements")[0].GetProperty("reference").GetString());
         using var staleClick = await client.PostAsJsonAsync($"v1/pages/{id}/click", new { @ref = previousReference }, timeout.Token);
@@ -292,7 +292,7 @@ public sealed class FolioApiBackendTests
         const string seedStorage = "(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), localStorage.setItem('__proto__', 'data'), true)";
         await Evaluate(seedStorage);
         var before = await Evaluate(readStorage);
-        Assert.AreEqual(firstOrigin, before[0].GetString());
+        Assert.AreEqual(firstOrigin, before[0].GetString(), before.GetRawText());
         Assert.AreEqual("local", before[1].GetString());
         Assert.AreEqual("session", before[2].GetString());
         Assert.AreEqual("data", before[3].GetString());
@@ -718,6 +718,156 @@ public sealed class FolioApiBackendTests
                 await host.WaitForExitAsync(CancellationToken.None);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task FolioApiSupportsCookiesLogsViewportInputInterceptionAndEvents()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the Folio Page API parity test.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await using var site = new TestSite();
+        await using var browser = new FolioBrowserBackend(executable!, [site.Origin], allowPrivateNetwork: true);
+        await using var api = new ArcanaApiServer(browser, "folio-parity-token");
+        api.Start();
+        using var client = new HttpClient { BaseAddress = api.Endpoint };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "folio-parity-token");
+
+        using var created = await client.PostAsJsonAsync("v1/pages", new { url = site.Origin + "/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, await created.Content.ReadAsStringAsync(timeout.Token));
+        using var createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync(timeout.Token));
+        var id = createdDoc.RootElement.GetProperty("pageId").GetString()!;
+
+        using var socket = new System.Net.WebSockets.ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", "Bearer folio-parity-token");
+        var wsUri = new UriBuilder(api.Endpoint) { Scheme = "ws", Path = "v1/events", Query = $"pageId={id}" }.Uri;
+        await socket.ConnectAsync(wsUri, timeout.Token);
+        var seenScreencast = false;
+        var receiveTask = Task.Run(async () =>
+        {
+            var buf = new byte[1024 * 1024];
+            while (!timeout.Token.IsCancellationRequested && socket.State == System.Net.WebSockets.WebSocketState.Open)
+            {
+                using var ms = new MemoryStream();
+                System.Net.WebSockets.WebSocketReceiveResult result;
+                do
+                {
+                    result = await socket.ReceiveAsync(buf, timeout.Token);
+                    if (result.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) return;
+                    ms.Write(buf, 0, result.Count);
+                } while (!result.EndOfMessage);
+
+                using var evtDoc = JsonDocument.Parse(ms.ToArray());
+                if (evtDoc.RootElement.TryGetProperty("name", out var nameEl) && nameEl.GetString() == "Page.screencastFrame" &&
+                    evtDoc.RootElement.TryGetProperty("data", out var dataEl) && dataEl.TryGetProperty("data", out var pngEl) &&
+                    !string.IsNullOrWhiteSpace(pngEl.GetString()))
+                {
+                    seenScreencast = true;
+                    return;
+                }
+            }
+        }, timeout.Token);
+
+        using var setCookies = await client.PutAsJsonAsync($"v1/pages/{id}/cookies", new[]
+        {
+            new { name = "folio_session", value = "cookie_ok_42", url = site.Origin, path = "/" }
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, setCookies.StatusCode, await setCookies.Content.ReadAsStringAsync(timeout.Token));
+        var cookiesText = await client.GetStringAsync($"v1/pages/{id}/cookies", timeout.Token);
+        StringAssert.Contains(cookiesText, "cookie_ok_42");
+
+        using var viewport = await client.PostAsJsonAsync($"v1/pages/{id}/viewport", new { width = 960, height = 640 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, viewport.StatusCode);
+        using var resizedShot = await client.GetAsync($"v1/pages/{id}/screenshot", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, resizedShot.StatusCode);
+        var pngBytes = await resizedShot.Content.ReadAsByteArrayAsync(timeout.Token);
+        Assert.AreEqual(960, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(pngBytes.AsSpan(16, 4)));
+        Assert.AreEqual(640, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(pngBytes.AsSpan(20, 4)));
+
+        using var routeSet = await client.PostAsJsonAsync($"v1/pages/{id}/route", new
+        {
+            rules = new[]
+            {
+                new { urlPattern = "*/api", action = "fulfill", status = 200, contentType = "application/json", body = "{\"message\":\"intercepted\"}" }
+            }
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, routeSet.StatusCode);
+
+        using var fetched = await client.PostAsJsonAsync($"v1/pages/{id}/evaluate", new
+        {
+            expression = "(async () => { console.log('folio-parity-log'); const r = await fetch('/api'); return (await r.json()).message; })()"
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, fetched.StatusCode);
+
+        using var waitIdle = await client.PostAsJsonAsync($"v1/pages/{id}/wait", new { condition = "networkidle", value = "", timeoutMs = 5000 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, waitIdle.StatusCode);
+
+        var htmlPage = """
+            <!doctype html><html><body>
+            <button id="hoverBtn" style="position:fixed;left:20px;top:20px;width:90px;height:30px">Hover</button>
+            <div id="clickTarget" style="position:fixed;left:20px;top:70px;width:90px;height:40px">Box</div>
+            <input id="fileInput" type="file" />
+            <script>
+              window.__moved = 0; window.__ctx = 0; window.__dbl = 0;
+              document.getElementById('hoverBtn').addEventListener('pointermove', () => window.__moved++);
+              document.getElementById('clickTarget').addEventListener('contextmenu', () => window.__ctx++);
+              document.getElementById('clickTarget').addEventListener('dblclick', () => window.__dbl++);
+              console.log('folio-parity-log');
+            </script></body></html>
+            """;
+        using var inlinePage = await client.PostAsJsonAsync("v1/pages", new { html = htmlPage }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, inlinePage.StatusCode);
+        using var inlineDoc = JsonDocument.Parse(await inlinePage.Content.ReadAsStringAsync(timeout.Token));
+        var inlineId = inlineDoc.RootElement.GetProperty("pageId").GetString()!;
+
+        using var snap = JsonDocument.Parse(await client.GetStringAsync($"v1/pages/{inlineId}/snapshot", timeout.Token));
+        var hoverRef = snap.RootElement.GetProperty("elements").EnumerateArray()
+            .First(e => e.GetProperty("name").GetString() == "Hover").GetProperty("reference").GetString()!;
+        var uploadRef = snap.RootElement.GetProperty("elements").EnumerateArray()
+            .First(e => e.GetProperty("tag").GetString() == "input").GetProperty("reference").GetString()!;
+
+        using var hovered = await client.PostAsJsonAsync($"v1/pages/{inlineId}/hover", new { @ref = hoverRef }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, hovered.StatusCode);
+        using var rightClick = await client.PostAsJsonAsync($"v1/pages/{inlineId}/click-at", new { x = 50, y = 90, button = "right", clickCount = 1 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, rightClick.StatusCode);
+        using var dblClick = await client.PostAsJsonAsync($"v1/pages/{inlineId}/click-at", new { x = 50, y = 90, button = "left", clickCount = 2 }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, dblClick.StatusCode);
+
+        var tempUpload = Path.Combine(Path.GetTempPath(), $"folio-upload-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(tempUpload, "folio upload bytes", timeout.Token);
+        try
+        {
+            using var uploaded = await client.PostAsJsonAsync($"v1/pages/{inlineId}/upload", new { @ref = uploadRef, path = tempUpload }, timeout.Token);
+            Assert.AreEqual(HttpStatusCode.OK, uploaded.StatusCode);
+            using var state = await client.PostAsJsonAsync($"v1/pages/{inlineId}/evaluate", new
+            {
+                expression = "JSON.stringify({ moved: window.__moved, ctx: window.__ctx, dbl: window.__dbl, file: document.getElementById('fileInput').files[0].name })"
+            }, timeout.Token);
+            var evalJson = await state.Content.ReadFromJsonAsync<string>(cancellationToken: timeout.Token);
+            using var parsedState = JsonDocument.Parse(evalJson!);
+            Assert.IsTrue(parsedState.RootElement.GetProperty("moved").GetInt32() > 0);
+            Assert.IsTrue(parsedState.RootElement.GetProperty("ctx").GetInt32() > 0);
+            Assert.IsTrue(parsedState.RootElement.GetProperty("dbl").GetInt32() > 0);
+            Assert.AreEqual(Path.GetFileName(tempUpload), parsedState.RootElement.GetProperty("file").GetString());
+        }
+        finally
+        {
+            if (File.Exists(tempUpload)) File.Delete(tempUpload);
+        }
+
+        string logsText = "";
+        for (var i = 0; i < 40; i++)
+        {
+            logsText = await client.GetStringAsync($"v1/pages/{inlineId}/logs", timeout.Token);
+            if (logsText.Contains("folio-parity-log", StringComparison.Ordinal)) break;
+            await Task.Delay(50, timeout.Token);
+        }
+        StringAssert.Contains(logsText, "folio-parity-log");
+
+        await Task.WhenAny(receiveTask, Task.Delay(TimeSpan.FromSeconds(10), timeout.Token));
+        Assert.IsTrue(seenScreencast, "Expected Page.screencastFrame over /v1/events for Folio page.");
     }
 
     private static ProcessStartInfo CreateFolioApiStartInfo(string cli, string broker)
