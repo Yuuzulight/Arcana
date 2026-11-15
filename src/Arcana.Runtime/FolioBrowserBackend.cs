@@ -15,14 +15,16 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _brokerExecutable;
     private readonly string[] _allowedOrigins;
+    private readonly string? _profileDirectory;
     private readonly ConcurrentDictionary<string, FolioPageBackend> _pages = new(StringComparer.Ordinal);
     private bool _disposed;
 
-    public FolioBrowserBackend(string brokerExecutable, IEnumerable<string>? allowedOrigins = null)
+    public FolioBrowserBackend(string brokerExecutable, IEnumerable<string>? allowedOrigins = null, string? profileDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
         _brokerExecutable = Path.GetFullPath(brokerExecutable);
         _allowedOrigins = allowedOrigins?.ToArray() ?? [];
+        _profileDirectory = profileDirectory;
         foreach (var origin in _allowedOrigins)
         {
             if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
@@ -32,7 +34,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         if (!File.Exists(_brokerExecutable)) throw new FileNotFoundException("The Folio content broker executable was not found.", _brokerExecutable);
     }
 
-    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options), options.FolioAllowedOrigins) { }
+    public FolioBrowserBackend(ArcanaOptions options) : this(ResolveBrokerPath(options), options.FolioAllowedOrigins, options.ProfileDirectory) { }
 
     private static string ResolveBrokerPath(ArcanaOptions options)
     {
@@ -47,7 +49,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
     public async Task VerifyStartupAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, cancellationToken).ConfigureAwait(false);
+        await using var broker = await BrokerConnection.StartAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, cancellationToken).ConfigureAwait(false);
         await broker.CloseAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -76,7 +78,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var id = Guid.NewGuid().ToString("N");
-        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, _allowedOrigins, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
+        var page = await FolioPageBackend.CreateAsync(_brokerExecutable, _allowedOrigins, _profileDirectory, url ?? "about:blank", cancellationToken).ConfigureAwait(false);
         if (!_pages.TryAdd(id, page))
         {
             await page.CloseAsync(CancellationToken.None).ConfigureAwait(false);
@@ -138,9 +140,9 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public string CurrentUrl => Url;
         public string Title { get; private set; } = "";
 
-        public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string url, CancellationToken cancellationToken)
+        public static async Task<FolioPageBackend> CreateAsync(string executable, string[] allowedOrigins, string? profileDirectory, string url, CancellationToken cancellationToken)
         {
-            var connection = await BrokerConnection.StartAsync(executable, allowedOrigins, cancellationToken).ConfigureAwait(false);
+            var connection = await BrokerConnection.StartAsync(executable, allowedOrigins, profileDirectory, cancellationToken).ConfigureAwait(false);
             var page = new FolioPageBackend(connection, allowedOrigins.Length > 0);
             try
             {
@@ -379,7 +381,49 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             return JsonSerializer.SerializeToElement(new { });
         }
 
-        public Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default) => Unsupported("file upload");
+        public async Task UploadFileAsync(string reference, string path, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            if (!File.Exists(path)) throw new FileNotFoundException("Upload file was not found.", path);
+            var fileName = Path.GetFileName(path);
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            var base64 = Convert.ToBase64String(bytes);
+            await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await RunReferenceActionAsync(reference, $$"""
+                    if (element.tagName !== 'INPUT' || (element.type || '').toLowerCase() !== 'file')
+                        throw new Error('Element is not a file input.');
+                    const raw = atob({{JsonSerializer.Serialize(base64)}});
+                    const u8 = new Uint8Array(raw.length);
+                    for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i);
+                    let fileObj = null;
+                    try { fileObj = new File([u8], {{JsonSerializer.Serialize(fileName)}}); } catch {}
+                    if (!fileObj || !fileObj.name) {
+                        fileObj = { name: {{JsonSerializer.Serialize(fileName)}}, size: u8.length, type: '' };
+                    }
+                    let dt = null;
+                    try {
+                        dt = new DataTransfer();
+                        dt.items.add(fileObj);
+                    } catch {}
+                    if (dt && dt.files && dt.files.length > 0) {
+                        try { element.files = dt.files; } catch {
+                            Object.defineProperty(element, 'files', { value: dt.files, configurable: true, writable: true });
+                        }
+                    } else {
+                        const fileList = [fileObj];
+                        fileList.item = i => fileList[i] || null;
+                        Object.defineProperty(element, 'files', { value: fileList, configurable: true, writable: true });
+                    }
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                    """, cancellationToken).ConfigureAwait(false);
+            }
+            finally { _navigationGate.Release(); }
+        }
         public async Task ClickAsync(string reference, CancellationToken cancellationToken = default)
         {
             await _navigationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -509,9 +553,12 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         internal int ProcessId => _process.Id;
 
-        public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken)
+        public static Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, CancellationToken cancellationToken) =>
+            StartAsync(executable, allowedOrigins, null, cancellationToken);
+
+        public static async Task<BrokerConnection> StartAsync(string executable, string[] allowedOrigins, string? profileDirectory, CancellationToken cancellationToken = default)
         {
-            var startInfo = CreateStartInfo(executable, allowedOrigins);
+            var startInfo = CreateStartInfo(executable, allowedOrigins, profileDirectory);
             var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start the Folio broker.");
             var connection = new BrokerConnection(process);
             try
@@ -628,7 +675,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException) { }
         }
 
-        private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins)
+        private static ProcessStartInfo CreateStartInfo(string executable, string[] allowedOrigins, string? profileDirectory)
         {
             var path = Path.GetFullPath(executable);
             var isAssembly = Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase);
@@ -645,6 +692,11 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
             startInfo.ArgumentList.Add("--broker");
             startInfo.ArgumentList.Add($"--arcana-parent-pid={Environment.ProcessId}");
             foreach (var origin in allowedOrigins) startInfo.ArgumentList.Add($"--allow-origin={origin}");
+            if (!string.IsNullOrWhiteSpace(profileDirectory))
+            {
+                Directory.CreateDirectory(profileDirectory);
+                startInfo.Environment["FOLIO_STORAGE_PATH"] = Path.Combine(Path.GetFullPath(profileDirectory), "local-storage.json");
+            }
             return startInfo;
         }
 

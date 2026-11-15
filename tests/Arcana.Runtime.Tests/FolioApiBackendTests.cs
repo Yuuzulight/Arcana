@@ -366,6 +366,62 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
+    public async Task FolioStoragePersistsAcrossBrowserRestartsWithSameProfile()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the storage persistence regression.");
+
+        var tempProfile = Path.Combine(Path.GetTempPath(), "arcana-folio-profile-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            {
+                await using var browser = new FolioBrowserBackend(executable!, profileDirectory: tempProfile);
+                await using var api = new ArcanaApiServer(browser, "storage-persist-token", profileDirectory: tempProfile);
+                api.Start();
+                using var client = new HttpClient { BaseAddress = api.Endpoint };
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "storage-persist-token");
+                using var created = await client.PostAsJsonAsync("v1/pages", new
+                {
+                    html = "<!doctype html><html><body><script>localStorage.setItem('persisted-key', 'saved-data'); sessionStorage.setItem('ephemeral-key', 'tab-only');</script></body></html>"
+                }, timeout.Token);
+                Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+                var pageId = (await created.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetProperty("pageId").GetString();
+                using var evaluated = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "localStorage.getItem('persisted-key')" }, timeout.Token);
+                Assert.AreEqual("saved-data", (await evaluated.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetString());
+            }
+
+            // Fresh browser restart with the same profile directory.
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            {
+                await using var browser = new FolioBrowserBackend(executable!, profileDirectory: tempProfile);
+                await using var api = new ArcanaApiServer(browser, "storage-persist-token", profileDirectory: tempProfile);
+                api.Start();
+                using var client = new HttpClient { BaseAddress = api.Endpoint };
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "storage-persist-token");
+                using var created = await client.PostAsJsonAsync("v1/pages", new
+                {
+                    html = "<!doctype html><html><body><script>window.loadedLocal = localStorage.getItem('persisted-key'); window.loadedSession = sessionStorage.getItem('ephemeral-key');</script></body></html>"
+                }, timeout.Token);
+                Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+                var pageId = (await created.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetProperty("pageId").GetString();
+                using var evalLocal = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "window.loadedLocal" }, timeout.Token);
+                Assert.AreEqual("saved-data", (await evalLocal.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetString());
+                using var evalSession = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "window.loadedSession" }, timeout.Token);
+                Assert.AreEqual(JsonValueKind.Null, (await evalSession.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).ValueKind);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempProfile))
+            {
+                try { Directory.Delete(tempProfile, true); } catch { }
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task FolioNavigationRunsARelativeExternalScript()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");

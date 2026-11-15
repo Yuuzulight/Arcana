@@ -48,6 +48,7 @@ try {
         'FolioNavigationRefusesARedirectOutsideTheAllowedPath'
         'FolioNavigationRunsARelativeExternalScript'
         'FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin'
+        'FolioStoragePersistsAcrossBrowserRestartsWithSameProfile'
         'ArcanaCliDoesNotReportReadyWhenFolioDisablesTheSandbox'
         'FolioApiForwardsPointerKeyboardTextAndWheelToDocument'
         'FolioBrokerRunsDomMutationAndProducesARealRenderedFrame'
