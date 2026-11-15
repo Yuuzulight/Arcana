@@ -1,12 +1,12 @@
 # Arcana
 
-Arcana is Mana's lightweight, agent-focused browser runtime, built around a patched build of the [Obscura](https://github.com/h4ckf0r0day/obscura) engine. It is a standalone sibling of [Folio](https://github.com/Yuuzulight/Folio): Folio renders self-contained artifacts; Arcana browses and interacts with the web.
+Arcana is Mana's lightweight, agent-focused browser runtime. Arcana owns browser sessions and the [Page API](docs/page-api.md). Its default backend on this branch is the sandboxed [Folio](https://github.com/Yuuzulight/Folio) content host.
 
-**Credit:** the browser engine is Obscura by [h4ckf0r0day](https://github.com/h4ckf0r0day), licensed Apache-2.0. Arcana does not include it in this repository; it builds it from a pinned upstream commit and applies a few small patches (see [engine patches](docs/engine-patches.md)). See [NOTICE](NOTICE).
+The optional patched [Obscura](https://github.com/h4ckf0r0day/obscura) backend provides its native CLI, MCP tools, and CDP surface. Arcana builds it from a pinned upstream commit. See the [engine patches](docs/engine-patches.md) and [NOTICE](NOTICE).
 
-Arcana exposes the native CLI, the full MCP tool inventory, and the CDP surface of the pinned **Obscura main revision**. It also provides a .NET API for pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. The engine-neutral page contract is versioned as [page API v1](docs/page-api.md). See the [roadmap](docs/roadmap.md) and the [parity matrix and verified limits](docs/parity.md).
+The engine-neutral Page API contract covers pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [roadmap](docs/roadmap.md) and [parity matrix](docs/parity.md) for backend coverage and qualification status.
 
-The engine is a pinned, patched source build of upstream Obscura (`engine.lock.json` names the commit; the four patches in `engine-patches/` add child-frame support for CDP clients, `multipart/form-data` file uploads, re-announced frames for a new document, and frames following their own links). Arcana owns the host and integration layer. It is not an independent renderer. Folio is a planned future engine behind the same page API (roadmap M5), not something that exists yet. Arcana is the primary browser; an explicit fallback opens Windows' registered default browser, including Opera GX when that is your default.
+The Obscura source pin lives in `engine.lock.json`. The patches in `engine-patches/` cover CDP child frames, multipart uploads, and frame navigation. Arcana's explicit fallback opens the browser registered as the Windows default.
 
 ## Install, build, and test
 
