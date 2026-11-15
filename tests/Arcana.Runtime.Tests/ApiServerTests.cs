@@ -568,9 +568,15 @@ public sealed class ApiServerTests
         await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", timeout.Token);
 
         // 6. Logs endpoint
-        using var logsRes = await ctx.Client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
-        Assert.AreEqual(HttpStatusCode.OK, logsRes.StatusCode);
-        StringAssert.Contains(await logsRes.Content.ReadAsStringAsync(timeout.Token), "ws-live-console-event");
+        string logsContent = "";
+        for (var i = 0; i < 20 && !logsContent.Contains("ws-live-console-event"); i++)
+        {
+            if (i > 0) await Task.Delay(50, timeout.Token);
+            using var logsRes = await ctx.Client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
+            Assert.AreEqual(HttpStatusCode.OK, logsRes.StatusCode);
+            logsContent = await logsRes.Content.ReadAsStringAsync(timeout.Token);
+        }
+        StringAssert.Contains(logsContent, "ws-live-console-event");
 
         using var deleted = await ctx.Client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
