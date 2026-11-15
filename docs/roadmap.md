@@ -21,7 +21,7 @@ Exit condition: Mana's browser tests and a live session pass with Playwright out
 
 ## M2: Parity on real flows, and dependability
 
-**Status: Obscura parity comparison documented. Folio release-candidate parity remains open.**
+**Status: Done for the Folio release candidate.** The Obscura comparison is documented, and the Folio build was measured on 2026-11-16 ([m2-parity.md](m2-parity.md)): startup about 700 ms, 41.7 MB with one tab and 45 MB with three. Mana's real flows pass through the Page API against the packaged release.
 
 - Run Mana's real flows through the API and compare them with Edge.
 - Recheck the Obscura 0.2.1 gaps, including missing links and script text.
@@ -62,7 +62,7 @@ Revisit signing before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-**Status: Open.** The local single-broker suite passes 13 tests against Folio revision `d47fe5907e608a293bf49afbbc50abb790ad0071`. It covers sandboxing, input, allowlisted HTTPS navigation, rendered screenshots, lifecycle cleanup, and origin-scoped storage. Hosted qualification, native event delivery, and real flow parity remain open.
+**Status: Locally qualified; hosted qualification remains.** The single-broker suite passes all 15 required tests against Folio revision `a0b3d03adf4c59c526abba062fe2365608c93a4e` ([m5-folio-readiness.md](m5-folio-readiness.md)). It covers sandboxing, input, allowlisted HTTPS navigation, rendered screenshots, lifecycle cleanup, origin-scoped storage, cookies, logs, viewport, interception and event delivery. The hosted (CI) qualification run against that revision remains.
 
 ## M6: Cutover, packaging, and publication
 

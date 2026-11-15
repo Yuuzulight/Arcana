@@ -17,7 +17,7 @@ All thirteen required Folio qualification integration tests pass against pinned 
 | Coordinate & reference input | Pass | `FolioApiForwardsPointerKeyboardTextAndWheelToDocument` (click, type, select, press, wheel) |
 | Storage retention and origin isolation | Pass | `FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin`; origin-scoped memory partitioning and Arcana profile persistence |
 | Canceled request handling | Pass | `FolioPageRemainsUsableAfterAPreCanceledRequest` |
-| Mana integration & real flows | Pass | Mana `arcana-real-engine.test.js` (4/4 passed: actions, storage restart, M4 manual control & screencast, M4 sign-in spikes with safe default-browser handoff) |
+| Mana integration & real flows | Pass | Mana `arcana-real-engine.test.js` against the packaged release (actions, storage restart, live screencast frames, M4 manual control, a file upload, a download, a drag, a 110-row table and form controls; the sign-in spikes run only with `MANA_ARCANA_SIGNIN_SPIKES=1`) |
 
 ## Obscura compatibility regression coverage
 

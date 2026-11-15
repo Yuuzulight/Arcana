@@ -23,6 +23,15 @@ Run `tools/measure-parity.ps1` with the locally built CLI to record startup, hea
 {"startupMs":362,"healthMs":120,"tabs":3,"createTabsMs":35,"workingSetMb":43.2}
 ```
 
+The Folio release candidate (Arcana `9dc8dcb`, Folio `a0b3d03a`, 2026-11-16, same host) measured:
+
+```json
+{"startupMs":689,"healthMs":37,"tabs":1,"createTabsMs":168,"workingSetMb":41.7}
+{"startupMs":702,"healthMs":37,"tabs":3,"createTabsMs":540,"workingSetMb":45}
+```
+
+`workingSetMb` is the Arcana API process only; each Folio tab runs a sandboxed broker and worker of its own, outside that figure. Folio starts about twice as slowly as the Obscura build did (about 700 ms against 360 ms) and creates a tab in about 180 ms rather than a few milliseconds, because each tab starts its own sandboxed process.
+
 The scheduled workflow [obscura-pin-bump.yml](../.github/workflows/obscura-pin-bump.yml) resolves the newest Obscura `main`, updates `engine.lock.json`, and opens a pin-bump pull request whose checks run the contract suite.
 
 ## Remaining gap dispositions

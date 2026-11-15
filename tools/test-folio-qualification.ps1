@@ -49,6 +49,7 @@ try {
         'FolioNavigationRunsARelativeExternalScript'
         'FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin'
         'FolioStoragePersistsAcrossBrowserRestartsWithSameProfile'
+        'FolioApiSupportsCookiesLogsViewportInputInterceptionAndEvents'
         'ArcanaCliDoesNotReportReadyWhenFolioDisablesTheSandbox'
         'FolioApiForwardsPointerKeyboardTextAndWheelToDocument'
         'FolioBrokerRunsDomMutationAndProducesARealRenderedFrame'
