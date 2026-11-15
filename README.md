@@ -26,6 +26,11 @@ To package locally from a clean checkout and a clean Folio native publish:
 ./tools/package-win-x64.ps1 -FolioPublish $folioPublish -FolioCommit $folioCommit -OutputZip ./artifacts/arcana-win-x64.zip
 ```
 
+For the compatibility package, add `-IncludeObscura` and use a distinct ZIP
+name. This builds the pinned Obscura render engine with the Arcana patches and
+packages both engines. Use `Arcana.Cli.exe api --backend=obscura` to opt into
+Obscura. Building this option requires Rust and the Windows C++ build tools.
+
 ### Source build
 
 Windows x64 and .NET 10 SDK:
