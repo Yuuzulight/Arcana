@@ -268,7 +268,7 @@ public sealed class FolioApiBackendTests
     }
 
     [TestMethod]
-    public async Task FolioNavigationDoesNotExposeStorageFromAnotherOrigin()
+    public async Task FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin()
     {
         var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
         if (string.IsNullOrWhiteSpace(executable) || Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_LIVE_WEB") != "1")
@@ -288,26 +288,136 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, pageJson);
         using var page = JsonDocument.Parse(pageJson);
         var route = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
-        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test')]";
-        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test'), localStorage.getItem('__proto__')]";
+        const string seedStorage = "(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), localStorage.setItem('__proto__', 'data'), true)";
+        await Evaluate(seedStorage);
         var before = await Evaluate(readStorage);
         Assert.AreEqual(firstOrigin, before[0].GetString());
         Assert.AreEqual("local", before[1].GetString());
         Assert.AreEqual("session", before[2].GetString());
+        Assert.AreEqual("data", before[3].GetString());
+        using var exportedResponse = await client.GetAsync($"{route}/storage", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, exportedResponse.StatusCode, await exportedResponse.Content.ReadAsStringAsync(timeout.Token));
+        var exported = await exportedResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
+
+        using var sibling = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, sibling.StatusCode, await sibling.Content.ReadAsStringAsync(timeout.Token));
+        var siblingPage = await sibling.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
+        var siblingRoute = $"v1/pages/{siblingPage.GetProperty("pageId").GetString()}";
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage, siblingRoute))[2].ValueKind);
+        await Evaluate("(sessionStorage.setItem('arcana-test', 'sibling'), true)", siblingRoute);
+        Assert.AreEqual("session", (await Evaluate(readStorage))[2].GetString());
+        Assert.AreEqual("sibling", (await Evaluate(readStorage, siblingRoute))[2].GetString());
+        using var closedSibling = await client.DeleteAsync(siblingRoute, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, closedSibling.StatusCode);
 
         using var navigated = await client.PostAsJsonAsync($"{route}/navigate", new { url = secondOrigin + "/html" }, timeout.Token);
         Assert.IsTrue(navigated.IsSuccessStatusCode, await navigated.Content.ReadAsStringAsync(timeout.Token));
         var after = await Evaluate(readStorage);
+        using var wrongOrigin = await client.PutAsJsonAsync($"{route}/storage", exported, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.BadRequest, wrongOrigin.StatusCode);
+        Assert.AreEqual(after.GetRawText(), (await Evaluate(readStorage)).GetRawText());
         Assert.AreEqual(secondOrigin, after[0].GetString());
         Assert.AreEqual(JsonValueKind.Null, after[1].ValueKind);
         Assert.AreEqual(JsonValueKind.Null, after[2].ValueKind);
 
-        async Task<JsonElement> Evaluate(string expression)
+        using var back = await client.PostAsJsonAsync($"{route}/back", new { }, timeout.Token);
+        Assert.IsTrue(back.IsSuccessStatusCode, await back.Content.ReadAsStringAsync(timeout.Token));
+        var returned = await Evaluate(readStorage);
+
+        // Reseed after capturing the back-navigation result so reload is checked independently.
+        await Evaluate(seedStorage);
+        using var reload = await client.PostAsJsonAsync($"{route}/reload", new { }, timeout.Token);
+        Assert.IsTrue(reload.IsSuccessStatusCode, await reload.Content.ReadAsStringAsync(timeout.Token));
+        var reloaded = await Evaluate(readStorage);
+
+        Assert.AreEqual(returned.GetRawText(), reloaded.GetRawText(), "Back and reload should expose the same retained values.");
+        Assert.AreEqual(firstOrigin, returned[0].GetString());
+        Assert.AreEqual("local", returned[1].GetString(), $"Expected localStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
+        Assert.AreEqual("session", returned[2].GetString(), $"Expected sessionStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
+
+        using var closed = await client.DeleteAsync(route, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, closed.StatusCode);
+        using var replacement = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, replacement.StatusCode, await replacement.Content.ReadAsStringAsync(timeout.Token));
+        var replacementPage = await replacement.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
+        route = $"v1/pages/{replacementPage.GetProperty("pageId").GetString()}";
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage))[1].ValueKind);
+        using var unsupportedCookies = await client.PutAsJsonAsync($"{route}/storage", new
         {
-            using var response = await client.PostAsJsonAsync($"{route}/evaluate", new { expression }, timeout.Token);
+            origin = firstOrigin,
+            localStorage = new Dictionary<string, string> { ["arcana-test"] = "should-not-apply" },
+            sessionStorage = new Dictionary<string, string>(),
+            cookies = new[] { new { name = "fixture", value = "value" } }
+        }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NotImplemented, unsupportedCookies.StatusCode);
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage))[1].ValueKind);
+        using var restored = await client.PutAsJsonAsync($"{route}/storage", exported, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, restored.StatusCode, await restored.Content.ReadAsStringAsync(timeout.Token));
+        Assert.AreEqual(before.GetRawText(), (await Evaluate(readStorage)).GetRawText());
+
+        async Task<JsonElement> Evaluate(string expression, string? pageRoute = null)
+        {
+            using var response = await client.PostAsJsonAsync($"{pageRoute ?? route}/evaluate", new { expression }, timeout.Token);
             var json = await response.Content.ReadAsStringAsync(timeout.Token);
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
             return JsonSerializer.Deserialize<JsonElement>(json);
+        }
+    }
+
+    [TestMethod]
+    public async Task FolioStoragePersistsAcrossBrowserRestartsWithSameProfile()
+    {
+        var executable = Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_BROKER");
+        if (string.IsNullOrWhiteSpace(executable))
+            Assert.Inconclusive("Set ARCANA_TEST_FOLIO_BROKER to run the storage persistence regression.");
+
+        var tempProfile = Path.Combine(Path.GetTempPath(), "arcana-folio-profile-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            {
+                await using var browser = new FolioBrowserBackend(executable!, profileDirectory: tempProfile);
+                await using var api = new ArcanaApiServer(browser, "storage-persist-token", profileDirectory: tempProfile);
+                api.Start();
+                using var client = new HttpClient { BaseAddress = api.Endpoint };
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "storage-persist-token");
+                using var created = await client.PostAsJsonAsync("v1/pages", new
+                {
+                    html = "<!doctype html><html><body><script>localStorage.setItem('persisted-key', 'saved-data'); sessionStorage.setItem('ephemeral-key', 'tab-only');</script></body></html>"
+                }, timeout.Token);
+                Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+                var pageId = (await created.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetProperty("pageId").GetString();
+                using var evaluated = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "localStorage.getItem('persisted-key')" }, timeout.Token);
+                Assert.AreEqual("saved-data", (await evaluated.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetString());
+            }
+
+            // Fresh browser restart with the same profile directory.
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            {
+                await using var browser = new FolioBrowserBackend(executable!, profileDirectory: tempProfile);
+                await using var api = new ArcanaApiServer(browser, "storage-persist-token", profileDirectory: tempProfile);
+                api.Start();
+                using var client = new HttpClient { BaseAddress = api.Endpoint };
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "storage-persist-token");
+                using var created = await client.PostAsJsonAsync("v1/pages", new
+                {
+                    html = "<!doctype html><html><body><script>window.loadedLocal = localStorage.getItem('persisted-key'); window.loadedSession = sessionStorage.getItem('ephemeral-key');</script></body></html>"
+                }, timeout.Token);
+                Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+                var pageId = (await created.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetProperty("pageId").GetString();
+                using var evalLocal = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "window.loadedLocal" }, timeout.Token);
+                Assert.AreEqual("saved-data", (await evalLocal.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetString());
+                using var evalSession = await client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "window.loadedSession" }, timeout.Token);
+                Assert.AreEqual(JsonValueKind.Null, (await evalSession.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).ValueKind);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempProfile))
+            {
+                try { Directory.Delete(tempProfile, true); } catch { }
+            }
         }
     }
 

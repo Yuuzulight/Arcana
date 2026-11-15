@@ -263,6 +263,48 @@ public sealed class ApiServerTests
     }
 
     [TestMethod]
+    public async Task V1EventSocketStreamsBackendEventsAndAcknowledgesClientDisconnect()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var context = await ApiTestContext.CreateAsync(timeout.Token);
+        if (context.UseExternalEndpoint) Assert.Inconclusive("WebSocket disconnect lifetime is verified against the locally owned Arcana API server.");
+
+        using var createdResponse = await context.Client.PostAsJsonAsync("v1/pages", new { url = "about:blank" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, createdResponse.StatusCode, await createdResponse.Content.ReadAsStringAsync(timeout.Token));
+        var pageId = (await createdResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token)).GetProperty("pageId").GetString()!;
+        using var socket = await context.ConnectWebSocketAsync(pageId, timeout.Token);
+
+        using var evaluate = await context.Client.PostAsJsonAsync($"v1/pages/{pageId}/evaluate", new { expression = "console.log('event-stream-check')" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, evaluate.StatusCode);
+        var eventBuffer = new byte[4096];
+        while (true)
+        {
+            using var message = new MemoryStream();
+            ValueWebSocketReceiveResult received;
+            do
+            {
+                received = await socket.ReceiveAsync(eventBuffer.AsMemory(), timeout.Token);
+                Assert.AreEqual(WebSocketMessageType.Text, received.MessageType);
+                message.Write(eventBuffer, 0, received.Count);
+            }
+            while (!received.EndOfMessage);
+            using var eventDocument = JsonDocument.Parse(message.ToArray());
+            var evt = eventDocument.RootElement;
+            Assert.AreEqual(pageId, evt.GetProperty("pageId").GetString());
+            if (evt.GetProperty("name").GetString() != "Runtime.consoleAPICalled") continue;
+            Assert.AreEqual("event-stream-check", evt.GetProperty("data").GetProperty("args")[0].GetProperty("value").GetString());
+            break;
+        }
+
+        using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client done", closeTimeout.Token);
+        Assert.AreEqual(WebSocketState.Closed, socket.State);
+
+        using var deleted = await context.Client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
+    }
+
+    [TestMethod]
     public async Task V1RequiresTokenOriginAndServesPageActions()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
@@ -526,9 +568,15 @@ public sealed class ApiServerTests
         await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", timeout.Token);
 
         // 6. Logs endpoint
-        using var logsRes = await ctx.Client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
-        Assert.AreEqual(HttpStatusCode.OK, logsRes.StatusCode);
-        StringAssert.Contains(await logsRes.Content.ReadAsStringAsync(timeout.Token), "ws-live-console-event");
+        string logsContent = "";
+        for (var i = 0; i < 20 && !logsContent.Contains("ws-live-console-event"); i++)
+        {
+            if (i > 0) await Task.Delay(50, timeout.Token);
+            using var logsRes = await ctx.Client.GetAsync($"v1/pages/{pageId}/logs", timeout.Token);
+            Assert.AreEqual(HttpStatusCode.OK, logsRes.StatusCode);
+            logsContent = await logsRes.Content.ReadAsStringAsync(timeout.Token);
+        }
+        StringAssert.Contains(logsContent, "ws-live-console-event");
 
         using var deleted = await ctx.Client.DeleteAsync($"v1/pages/{pageId}", timeout.Token);
         Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);

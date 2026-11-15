@@ -19,6 +19,7 @@ try
 {
 switch (args[0].ToLowerInvariant())
 {
+#if !ARCANA_FOLIO_ONLY
     case "engine":
     case "serve":
     case "fetch":
@@ -28,6 +29,7 @@ switch (args[0].ToLowerInvariant())
         var executable = GetOption(nativeArgs, "executable");
         Environment.ExitCode = await EngineCommand.RunAsync(nativeArgs.Where(a => !a.StartsWith("--executable=", StringComparison.OrdinalIgnoreCase)), executable, shutdown.Token);
         break;
+#endif
     case "doctor":
         PrintDoctor();
         break;
@@ -67,16 +69,28 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
 {
     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     timeout.CancelAfter(TimeSpan.FromSeconds(30));
-    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
-    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
-        throw new NotSupportedException("Folio snapshot mode is not part of the qualified slice. Use `api --backend=folio` for sandboxed inline fixtures.");
+    var backend = GetBackend(args);
     var options = new ArcanaOptions
     {
         Backend = backend,
         ExecutablePath = GetOption(args, "executable"),
         FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
+        FolioBrokerPath = GetOption(args, "folio-broker"),
+        FolioAllowedOrigins = args.Where(arg => arg.StartsWith("--folio-allow-origin=", StringComparison.OrdinalIgnoreCase))
+            .Select(arg => arg["--folio-allow-origin=".Length..]).ToArray(),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
+
+    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
+    {
+        await using var folioBrowser = new FolioBrowserBackend(options);
+        await folioBrowser.VerifyStartupAsync(timeout.Token);
+        var folioPage = await folioBrowser.NewPageAsync(url, timeout.Token);
+        var folioSnapshot = await folioPage.SnapshotAsync(timeout.Token);
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(folioSnapshot,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        return;
+    }
 
     await using var runtime = new BrowserRuntime(options);
     await runtime.StartAsync(timeout.Token);
@@ -89,9 +103,13 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
 
 static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 {
-    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    var backend = GetBackend(args);
     if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
-        throw new NotSupportedException("Folio run mode is not part of the qualified slice. Use `api --backend=folio` for sandboxed inline fixtures.");
+    {
+        var apiArgs = new List<string>(args) { "--backend=folio" };
+        await ApiAsync(apiArgs.ToArray(), cancellationToken);
+        return;
+    }
     var options = new ArcanaOptions
     {
         Backend = backend,
@@ -111,7 +129,7 @@ static async Task RunAsync(string[] args, CancellationToken cancellationToken)
 static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
 {
     var token = GetOption(args, "token") ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    var backend = GetBackend(args);
     var options = new ArcanaOptions
     {
         Backend = backend,
@@ -123,10 +141,6 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
         ProfileDirectory = GetOption(args, "profile"),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
-    if (!options.Backend.Equals("obscura", StringComparison.OrdinalIgnoreCase) &&
-        !options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
-        throw new ArgumentException("--backend must be obscura or folio.");
-
     if (options.Backend.Equals("folio", StringComparison.OrdinalIgnoreCase))
     {
         await using var folioBrowser = new FolioBrowserBackend(options);
@@ -152,9 +166,26 @@ static async Task ApiAsync(string[] args, CancellationToken cancellationToken)
 static void PrintDoctor()
 {
     Console.WriteLine($"Arcana default engine: {ArcanaOptions.DefaultBackend}");
-    Console.WriteLine($"Build option engine: Obscura {EngineLocator.Version} ({EngineLocator.Resolve()})");
+    Console.WriteLine($"Default engine: Folio ({EngineLocator.ResolveFolio() ?? "not resolved"})");
+#if !ARCANA_FOLIO_ONLY
+    string obscuraPath;
+    try { obscuraPath = EngineLocator.Resolve(); } catch { obscuraPath = "not installed"; }
+    Console.WriteLine($"Development parity engine: Obscura {EngineLocator.Version} ({obscuraPath})");
+#endif
     Console.WriteLine("Default-browser fallback: Windows default handler, opened only by explicit caller request");
     Console.WriteLine("Default policy: loopback only, one worker, and private-network access disabled.");
+}
+
+static string GetBackend(string[] args)
+{
+    var backend = GetOption(args, "backend") ?? ArcanaOptions.DefaultBackend;
+    if (backend.Equals("folio", StringComparison.OrdinalIgnoreCase)) return "folio";
+#if ARCANA_FOLIO_ONLY
+    throw new ArgumentException("This Arcana package supports only the Folio backend.");
+#else
+    if (backend.Equals("obscura", StringComparison.OrdinalIgnoreCase)) return "obscura";
+    throw new ArgumentException("--backend must be obscura or folio.");
+#endif
 }
 
 static string? GetOption(string[] args, string name)
@@ -167,12 +198,17 @@ static string? GetOption(string[] args, string name)
 static void PrintHelp()
 {
     Console.WriteLine("Arcana Browser runtime");
+#if !ARCANA_FOLIO_ONLY
     Console.WriteLine("  fetch|scrape|serve|mcp [engine options] [--executable=PATH]");
     Console.WriteLine("  engine [all native engine arguments, including global flags]");
     Console.WriteLine("  engine --help     (complete engine CLI reference)");
-    Console.WriteLine("  doctor");
     Console.WriteLine("  run [--backend=folio|obscura] [--executable=PATH] [--port=PORT] [--allow-private-network]");
     Console.WriteLine("  api [--backend=folio|obscura] [--executable=PATH] [--folio-executable=PATH] [--folio-broker=PATH] [--folio-allow-origin=HTTPS_URL]... [--profile=DIR] [--port=PORT] [--token=TOKEN] [--allow-private-network]");
     Console.WriteLine("  snapshot URL [--backend=folio|obscura] [--executable=PATH] [--allow-private-network]");
+#else
+    Console.WriteLine("  api|run [--folio-broker=PATH] [--folio-allow-origin=HTTPS_URL]... [--profile=DIR] [--port=PORT] [--token=TOKEN]");
+    Console.WriteLine("  snapshot URL [--folio-broker=PATH] [--folio-allow-origin=HTTPS_URL]...");
+#endif
+    Console.WriteLine("  doctor");
     Console.WriteLine("  fallback https://example.com");
 }

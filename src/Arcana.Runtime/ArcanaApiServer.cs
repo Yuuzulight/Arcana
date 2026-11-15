@@ -318,28 +318,72 @@ public sealed class ArcanaApiServer : IAsyncDisposable
         if (id is null || !_pages.TryGetValue(id, out var page)) { await ErrorAsync(context.Response, 404, "page_not_found", "A pageId query parameter is required."); return; }
         using var events = page.Subscribe();
         var socket = (await context.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
+        using var socketLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? sendEvents = null;
+        Task? observeDisconnect = null;
+        var closeStatus = WebSocketCloseStatus.NormalClosure;
+        var closeDescription = "closed";
         try
         {
-            await foreach (var evt in events.ReadAllAsync(cancellationToken))
-            {
-                var data = JsonSerializer.SerializeToUtf8Bytes(new { type = "event", pageId = id, name = evt.Method, data = evt.Parameters }, JsonOptions);
-                await socket.SendAsync(data, WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
-            }
+            sendEvents = SendEventsAsync(socket, events, id, socketLifetime.Token);
+            observeDisconnect = ObserveSocketDisconnectAsync(socket, socketLifetime.Token);
+            var completed = await Task.WhenAny(sendEvents, observeDisconnect).ConfigureAwait(false);
+            if (completed == sendEvents) await sendEvents.ConfigureAwait(false);
+            else await observeDisconnect.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (WebSocketException) { }
+        catch (IOException)
+        {
+            closeStatus = WebSocketCloseStatus.InternalServerError;
+            closeDescription = "event stream overflow";
+        }
         finally
         {
+            socketLifetime.Cancel();
+            await ObserveWebSocketTaskAsync(sendEvents).ConfigureAwait(false);
+            await ObserveWebSocketTaskAsync(observeDisconnect).ConfigureAwait(false);
             using (socket)
             using (var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
             {
                 try
                 {
-                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "closed", closeTimeout.Token).ConfigureAwait(false);
+                    await socket.CloseOutputAsync(closeStatus, closeDescription, closeTimeout.Token).ConfigureAwait(false);
                 }
                 catch (Exception error) when (error is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
             }
         }
+    }
+
+    private async Task SendEventsAsync(WebSocket socket, IArcanaEventSubscription events, string pageId, CancellationToken cancellationToken)
+    {
+        await foreach (var evt in events.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var data = JsonSerializer.SerializeToUtf8Bytes(new { type = "event", pageId, name = evt.Method, data = evt.Parameters }, JsonOptions);
+            await socket.SendAsync(data, WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ObserveSocketDisconnectAsync(WebSocket socket, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[1024];
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken).ConfigureAwait(false);
+            if (result.MessageType == WebSocketMessageType.Close) return;
+            while (!result.EndOfMessage)
+            {
+                result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close) return;
+            }
+        }
+    }
+
+    private static async Task ObserveWebSocketTaskAsync(Task? task)
+    {
+        if (task is null) return;
+        try { await task.ConfigureAwait(false); }
+        catch (Exception error) when (error is OperationCanceledException or WebSocketException or IOException or ObjectDisposedException) { }
     }
 
     private bool Authorize(HttpListenerRequest request)

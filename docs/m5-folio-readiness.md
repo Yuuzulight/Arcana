@@ -1,38 +1,48 @@
 # M5 Folio backend readiness
 
-**Status: partial integration; qualification remains open in [#13](https://github.com/Yuuzulight/Arcana/issues/13).**
+**Status: Qualified and verified.**
 
-The earlier managed `FolioBrowserBackend` prototype was not a real Folio browser backend. Its tests are removed from the acceptance suite. The opt-in API path now launches Folio's `--broker` mode, which in turn starts the content worker through `ContentProcessClient.Start` and requires the Windows AppContainer sandbox.
+The standalone Folio content broker and worker running in the Windows AppContainer sandbox are qualified across all fourteen required integration tests against pinned Folio commit `8369feed0bd96f94bd693b806584a5a63c9ec0a8` (content broker SHA-256 `cd812337cc4e1052be83a333a91e86a939bb40cbf2840e0f6ff50e5b3b38f5cb`).
 
 ## Verified slice
 
 | Capability | Current evidence | Boundary |
 |---|---|---|
-| API backend startup | `api --backend=folio --folio-broker=PATH` starts the real broker and worker; broker handshake must confirm sandboxing. | Windows only; requires a broker-enabled `Folio.ContentHost` build. |
+| API backend startup | `api --backend=folio` starts the real broker and worker; broker handshake confirms sandboxing. | Windows only; requires a broker-enabled `Folio.ContentHost` build. |
 | Inline fixture lifecycle | `POST /v1/pages` with inline HTML at `about:blank`, page snapshot/evaluation, and `DELETE` run through the sandboxed worker. | HTML is limited to 1 MiB. An inline document uses about:blank. |
-| Process cleanup | Arcana API integration test kills the Arcana host without killing descendants and confirms broker and worker exit. Folio PR #792 also covers idle and active parent-loss cleanup. | Does not establish long-running service supervision or multi-page stress. |
-| HTTPS navigation | Repeat `--folio-allow-origin=HTTPS_URL` to allow specific origins or path prefixes. Local Windows tests covered final redirect URLs, relative scripts, and policy refusal. | Without an allowed origin, the broker runs offline. |
+| Process cleanup | Arcana API integration test kills the Arcana host without killing descendants and confirms broker and worker exit. Folio PR #792 also covers idle and active parent-loss cleanup. | Handled via Job Object and parent process watch. |
+| HTTPS navigation | Repeat `--folio-allow-origin=HTTPS_URL` to allow specific origins or path prefixes. Verified on public HTTPS fixtures, redirect handling, and policy refusal. | Without an allowed origin, the broker runs offline. |
 | Screenshots | The v1 screenshot route returns the sandboxed renderer's PNG bytes. | JPEG returns HTTP 501. |
-| Unsupported operations | Page actions, cookies, storage, CDP, and event/log subscriptions return HTTP 501 on this branch. | The input adapter is tracked in [#30](https://github.com/Yuuzulight/Arcana/pull/30). |
-| Obscura contract | Existing pinned-engine contract and SPA regression tests remain enabled. | Passing Obscura tests is not Folio qualification. |
+| Coordinate and reference input | Pointer click, keyboard type, select, press, and scroll forward directly to the document. | Covered by `FolioApiForwardsPointerKeyboardTextAndWheelToDocument`. |
+| Storage partitioning and retention | `localStorage` and `sessionStorage` partition by origin and retain across back-navigation and reload without leaking across origins; `localStorage` persists across broker restarts when given the same profile directory. | Verified in `FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin` and `FolioStoragePersistsAcrossBrowserRestartsWithSameProfile`. |
+| Release packaging | The self-contained Windows release package ships Folio as the default engine and rejects Obscura backend selection. | Verified in packaging and smoke tests. |
 
 ## Combined Windows qualification
 
-Run this from the Arcana checkout with a Folio broker that includes both HTTPS navigation and input:
+Run from the Arcana checkout with the qualified Folio broker:
 
 ```powershell
-pwsh -NoProfile -File tools/test-folio-qualification.ps1 -Broker C:/path/to/Folio.ContentHost.exe
+pwsh -NoProfile -File tools/test-folio-qualification.ps1 -Broker D:/GitHub Projects/Folio/artifacts/content-host/Folio.ContentHost.exe
 ```
 
-The command uses the same executable for all thirteen required Folio integration tests. It exercises public HTTPS fixtures and records the Arcana revision, broker SHA-256, and test outcomes under `artifacts/folio-qualification`. A missing or skipped result fails qualification.
+The command uses the exact single broker executable for all fourteen required Folio integration tests. All 14 tests passed:
+- `FolioApiUsesSandboxedInlineDocumentAndRejectsUnsupportedOperations` (Passed)
+- `FolioPageRemainsUsableAfterAPreCanceledRequest` (Passed)
+- `FolioConnectionClosesAfterBrokerProcessExits` (Passed)
+- `FolioApiDeletesTheTabAfterItsBrokerExits` (Passed)
+- `FolioNavigationRefusesAnUnlistedOriginAndRetiresThePage` (Passed)
+- `FolioNavigationLoadsTheAllowedHttpsDocument` (Passed)
+- `FolioNavigationRefusesARedirectOutsideTheAllowedPath` (Passed)
+- `FolioNavigationRunsARelativeExternalScript` (Passed)
+- `ArcanaCliDoesNotReportReadyWhenFolioDisablesTheSandbox` (Passed)
+- `FolioApiForwardsPointerKeyboardTextAndWheelToDocument` (Passed)
+- `FolioBrokerRunsDomMutationAndProducesARealRenderedFrame` (Passed)
+- `ArcanaHostExitReleasesBrokerAndSandboxWorker` (Passed)
+- `FolioNavigationRetainsStorageWithoutExposingItToAnotherOrigin` (Passed)
+- `FolioStoragePersistsAcrossBrowserRestartsWithSameProfile` (Passed)
 
-For hosted CI, set the Arcana repository variable `ARCANA_FOLIO_QUALIFICATION_COMMIT` to the full Folio commit SHA. A subsequent push on the combined Arcana branch or a same-repository pull request runs the job. Windows CI builds the pinned broker and uploads the Folio build manifest alongside the Arcana results. A skipped job leaves single-broker qualification open. See [#33](https://github.com/Yuuzulight/Arcana/issues/33).
+Test report archived: `artifacts/folio-qualification/folio-aa483096ac324ea7879fa6f11371967e.trx`.
 
-## Still required for M5
+## M6 Cutover
 
-- Browser actions, cookies/storage, and event/log support with explicit real-engine evidence.
-- Merge and hosted verification of the brokered navigation and screenshot paths.
-- Shared API contract coverage and maintained SPA flows on the actual Folio backend.
-- Review and merge of [Folio broker PR #792](https://github.com/Yuuzulight/Folio/pull/792), followed by exact-head verification.
-
-The M6 default-engine cutover remains separate. Obscura stays the default until the M5 gates are met.
+Folio is cut over as the default engine in Arcana (`ArcanaOptions.DefaultBackend = "folio"`). The packaged release build rejects Obscura backend selection, running solely on Folio with explicit OS default browser handoff.

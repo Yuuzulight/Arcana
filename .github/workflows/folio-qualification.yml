@@ -36,7 +36,7 @@ jobs:
         with:
           repository: Yuuzulight/Folio
           ref: ${{ inputs.folio_commit }}
-          path: folio-source
+          path: artifacts/folio-source
           persist-credentials: false
       - uses: actions/setup-dotnet@v6.0.0
         with:
@@ -44,8 +44,8 @@ jobs:
       - name: Publish standalone Folio broker
         shell: pwsh
         run: |
-          $destination = Join-Path $pwd 'folio-source/artifacts/arcana-qualification'
-          pwsh -NoProfile -File ./folio-source/tools/publish-content-host.ps1 -Destination $destination -Runtime win-x64
+          $destination = Join-Path $pwd 'artifacts/folio-source/artifacts/arcana-qualification'
+          pwsh -NoProfile -File ./artifacts/folio-source/tools/publish-content-host.ps1 -Destination $destination -Runtime win-x64
           if ($LASTEXITCODE) { throw 'Folio broker publish failed.' }
           $manifest = Get-Content (Join-Path $destination 'native-build.json') -Raw | ConvertFrom-Json
           if ($manifest.sourceCommit -cne $env:FOLIO_COMMIT -or $manifest.sourceDirty -ne $false) {
@@ -54,7 +54,37 @@ jobs:
       - name: Run combined Arcana qualification
         shell: pwsh
         run: |
-          ./tools/test-folio-qualification.ps1 -Broker ./folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
+          ./tools/test-folio-qualification.ps1 -Broker ./artifacts/folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
+      - name: Package and verify the qualified Windows build
+        shell: pwsh
+        run: |
+          $zip = Join-Path $pwd 'artifacts/release/arcana-win-x64.zip'
+          ./tools/package-win-x64.ps1 -FolioPublish ./artifacts/folio-source/artifacts/arcana-qualification -FolioCommit $env:FOLIO_COMMIT -OutputZip $zip
+          $expectedHash = ((Get-Content -LiteralPath "$zip.sha256") -split ' ')[0]
+          if ((Get-FileHash -LiteralPath $zip).Hash -ne $expectedHash) { throw 'The package checksum did not match.' }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'arcana-qualified-package'
+          Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
+          $build = Get-Content -LiteralPath "$unpacked/arcana-build.json" -Raw | ConvertFrom-Json
+          $brokerHash = (Get-FileHash -LiteralPath "$unpacked/engines/folio/current/Folio.ContentHost.exe").Hash
+          if ($build.arcanaCommit -ne (git rev-parse HEAD) -or $build.folioCommit -ne $env:FOLIO_COMMIT -or $build.folioBrokerSha256 -ne $brokerHash) {
+            throw 'The extracted package does not match the qualified build.'
+          }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $legacySelection = & "$unpacked/Arcana.Cli.exe" snapshot about:blank --backend=obscura 2>&1
+          if ($LASTEXITCODE -eq 0 -or $legacySelection -notmatch 'supports only the Folio backend') {
+            throw 'The release package must reject Obscura backend selection.'
+          }
+          $snapshot = & "$unpacked/Arcana.Cli.exe" snapshot https://httpbingo.org/html --folio-allow-origin=https://httpbingo.org
+          if ($LASTEXITCODE) { throw 'The packaged Arcana executable failed its HTTPS smoke check.' }
+          $page = $snapshot | ConvertFrom-Json
+          if ($page.Url -ne 'https://httpbingo.org/html' -or $page.Text -notmatch 'Moby-Dick') {
+            throw 'The packaged Folio browser did not render the HTTPS smoke page.'
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: qualified-windows-package
+          if-no-files-found: error
+          path: artifacts/release/*
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -62,4 +92,4 @@ jobs:
           path: |
             artifacts/folio-qualification/*.trx
             artifacts/folio-qualification/*.json
-            folio-source/artifacts/arcana-qualification/native-build.json
+            artifacts/folio-source/artifacts/arcana-qualification/native-build.json
