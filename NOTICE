@@ -7,8 +7,8 @@ includes the font notices under engines/folio/current/fonts.
 Upstream: https://github.com/Yuuzulight/Folio
 License: Apache License 2.0
 
-The optional Obscura build uses the source revision and patches pinned in
-engine.lock.json.
+The historical Obscura parity baseline uses the source revision and patches
+pinned in engine.lock.json.
 Upstream: https://github.com/h4ckf0r0day/obscura
 License: Apache License 2.0
 

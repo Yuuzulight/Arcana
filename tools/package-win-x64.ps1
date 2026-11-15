@@ -2,8 +2,7 @@
 param(
     [Parameter(Mandatory)][string]$FolioPublish,
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$FolioCommit,
-    [Parameter(Mandatory)][string]$OutputZip,
-    [switch]$IncludeObscura
+    [Parameter(Mandatory)][string]$OutputZip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,27 +54,12 @@ try {
     New-Item -ItemType Directory -Path $engineParent | Out-Null
     Copy-Item -LiteralPath $folio -Destination (Join-Path $engineParent 'current') -Recurse
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE'), (Join-Path $repo 'NOTICE') -Destination $package
-    $build = [ordered]@{
+    [ordered]@{
         arcanaCommit = $arcanaCommit
         folioCommit = $FolioCommit
         folioBrokerSha256 = $manifest.executableSha256
         runtime = 'win-x64'
-    }
-    if ($IncludeObscura) {
-        $obscura = Join-Path $package 'engines/obscura/current'
-        & (Join-Path $PSScriptRoot 'fetch-engine.ps1') -Destination $obscura -Variant render
-        $lockPath = Join-Path $repo 'engine.lock.json'
-        $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-        Copy-Item -LiteralPath $lockPath -Destination $obscura
-        $build.obscura = @{
-            sourceCommit = $lock.sourceCommit
-            version = $lock.version
-            variant = 'render'
-            executableSha256 = (Get-FileHash -LiteralPath (Join-Path $obscura 'obscura.exe')).Hash.ToLowerInvariant()
-            workerSha256 = (Get-FileHash -LiteralPath (Join-Path $obscura 'obscura-worker.exe')).Hash.ToLowerInvariant()
-        }
-    }
-    $build | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'arcana-build.json')
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'arcana-build.json')
 
     $archive = Join-Path $stage 'Arcana.zip'
     Compress-Archive -Path (Join-Path $package '*') -DestinationPath $archive

@@ -62,8 +62,8 @@ Revisit signing before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-**Status: Done.** Qualified against Folio revision `d47fe5907e608a293bf49afbbc50abb790ad0071` (content broker SHA-256 `6e68d0224a282c49651d01023770a4f5b0a1cf22fcea230ba7a09f660fcb5911`). The standalone content broker runs with AppContainer sandboxing, coordinate and reference input, allowlisted HTTPS navigation, rendered PNG screenshots, process lifecycle cleanup, and origin-scoped storage partitioning. All 13 qualification tests pass on the real single-broker build (`artifacts/folio-qualification/folio-3bdf80d5b32e4852969dbfcd5c2ca4b1.trx`).
+**Status: Open.** The local single-broker suite passes 13 tests against Folio revision `d47fe5907e608a293bf49afbbc50abb790ad0071`. It covers sandboxing, input, allowlisted HTTPS navigation, rendered screenshots, lifecycle cleanup, and origin-scoped storage. Hosted qualification, native event delivery, and real flow parity remain open.
 
 ## M6: Cutover, packaging, and publication
 
-**Status: Done.** Arcana and Mana defaults have switched to the qualified Folio build (`DefaultBackend = "folio"`). Obscura is retained as an explicit build and runtime option (`--backend=obscura`) for one release. Playwright and CDP are absent from the Arcana automation path in Mana, and default-browser handoff handles authentication and CAPTCHA surfaces. Release package published with SHA-256 checksums; code signing is postponed.
+**Status: Open.** Ship Folio as the only bundled 1.0 engine. Verify Mana's normal browser path over the Page API and explicit handoff to the OS default browser. Validate the final Windows package and publish it with SHA-256 checksums. Code signing is postponed.

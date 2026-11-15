@@ -2,7 +2,7 @@
 
 Arcana is Mana's lightweight, agent-focused browser runtime. Arcana owns browser sessions and the [Page API](docs/page-api.md). Its default backend on this branch is the sandboxed [Folio](https://github.com/Yuuzulight/Folio) content host.
 
-The optional patched [Obscura](https://github.com/h4ckf0r0day/obscura) backend provides its native CLI, MCP tools, and CDP surface. Arcana builds it from a pinned upstream commit. See the [engine patches](docs/engine-patches.md) and [NOTICE](NOTICE).
+Arcana 1.0 ships with Folio. The source tree still has the historical [Obscura](https://github.com/h4ckf0r0day/obscura) baseline for migration and parity testing. See the [engine patches](docs/engine-patches.md) and [NOTICE](NOTICE).
 
 The engine-neutral Page API contract covers pages, stable references, forms, input, capture, storage, tabs, and event subscriptions. See the [roadmap](docs/roadmap.md) and [parity matrix](docs/parity.md) for backend coverage and qualification status.
 
@@ -26,12 +26,7 @@ To package locally from a clean checkout and a clean Folio native publish:
 ./tools/package-win-x64.ps1 -FolioPublish $folioPublish -FolioCommit $folioCommit -OutputZip ./artifacts/arcana-win-x64.zip
 ```
 
-For the compatibility package, add `-IncludeObscura` and use a distinct ZIP
-name. This builds the pinned Obscura render engine with the Arcana patches and
-packages both engines. Use `Arcana.Cli.exe api --backend=obscura` to opt into
-Obscura. Building this option requires Rust and the Windows C++ build tools.
-
-### Source build
+### Source build for the historical parity baseline
 
 Windows x64 and .NET 10 SDK:
 
