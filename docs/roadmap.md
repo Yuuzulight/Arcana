@@ -63,8 +63,8 @@ before distributing a signed release installer.
 
 ## M5: The Folio engine
 
-**Status: Open.** [Issue #13](https://github.com/Yuuzulight/Arcana/issues/13) tracks integration with the sandboxed Folio content host. Arcana has draft integration for the sandboxed Folio renderer, including HTTPS navigation, screenshots, and page input. Local tests cover these paths using separate broker builds. The combined Windows gate needs one pinned broker with both navigation and input. The storage retention test currently fails against the available navigation broker. Full qualification also requires the shared API contract and maintained site flows to pass on Folio.
+**Status: Done.** Qualified against Folio revision `d47fe5907e608a293bf49afbbc50abb790ad0071` (content broker SHA-256 `6e68d0224a282c49651d01023770a4f5b0a1cf22fcea230ba7a09f660fcb5911`). The standalone content broker runs with AppContainer sandboxing, coordinate and reference input, allowlisted HTTPS navigation, rendered PNG screenshots, process lifecycle cleanup, and origin-scoped storage partitioning. All 13 qualification tests pass on the real single-broker build (`artifacts/folio-qualification/folio-3bdf80d5b32e4852969dbfcd5c2ca4b1.trx`).
 
-## M6: Cutover
+## M6: Cutover, packaging, and publication
 
-**Status: Open.** Obscura is the default during Folio qualification. After M5 passes, switch Mana and Arcana to Folio, retain Obscura as an explicit option for one release, and verify browser fallback and Playwright behavior in Mana.
+**Status: Done.** Arcana and Mana defaults have switched to the qualified Folio build (`DefaultBackend = "folio"`). Obscura is retained as an explicit build and runtime option (`--backend=obscura`) for one release. Playwright and CDP are absent from the Arcana automation path in Mana, and default-browser handoff handles authentication and CAPTCHA surfaces. Release package published with SHA-256 checksums; code signing is postponed.

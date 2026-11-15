@@ -39,7 +39,8 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         return options.FolioBrokerPath
-            ?? throw new ArgumentException("The Folio backend requires FolioBrokerPath to point to the broker-enabled Folio.ContentHost build.", nameof(options));
+            ?? EngineLocator.ResolveFolio(options.FolioExecutablePath)
+            ?? throw new ArgumentException("The Folio backend requires FolioBrokerPath or a discoverable Folio.ContentHost build.", nameof(options));
     }
 
     /// <summary>Confirms the configured broker can start its required sandbox before the API starts listening.</summary>

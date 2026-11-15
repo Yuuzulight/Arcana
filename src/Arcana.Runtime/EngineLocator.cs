@@ -35,7 +35,10 @@ public static class EngineLocator
 
     public static string? ResolveFolio(string? executable = null)
     {
-        executable ??= Environment.GetEnvironmentVariable("FOLIO_CONTENT_HOST") ?? Environment.GetEnvironmentVariable("FOLIO_ENGINE");
+        executable ??= Environment.GetEnvironmentVariable("FOLIO_CONTENT_HOST")
+            ?? Environment.GetEnvironmentVariable("FOLIO_ENGINE")
+            ?? Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_QUALIFICATION_BROKER")
+            ?? Environment.GetEnvironmentVariable("ARCANA_TEST_FOLIO_NAVIGATION_BROKER");
         if (!string.IsNullOrWhiteSpace(executable))
         {
             var fullPath = Path.GetFullPath(executable);
@@ -63,6 +66,8 @@ public static class EngineLocator
         // Check common development feed paths
         var feedCandidates = new[]
         {
+            @"D:\GitHub Projects\Folio\artifacts\content-host\Folio.ContentHost.exe",
+            @"D:\GitHub Projects\Folio\tools\Folio.ContentHost\bin\Release\net10.0\win-x64\publish\Folio.ContentHost.exe",
             @"C:\ManaAI\Folio\tools\Folio.ContentHost\bin\Release\net10.0\win-x64\publish\Folio.ContentHost.exe",
             @"C:\ManaAI\Folio\tools\Folio.ContentHost\bin\Release\net10.0\Folio.ContentHost.exe",
             @"D:\Mana\windows-native-launcher\folio-feed\content-host\8112827b09c517026a595c007b6bd2e3ff29e46a\win-x64\Folio.ContentHost.exe"
