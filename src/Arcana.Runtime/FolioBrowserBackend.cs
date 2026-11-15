@@ -258,8 +258,32 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
 
         public Task<JsonElement> GetCookiesAsync(CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
         public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
-        public Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default) => Unsupported<PageStorageState>("storage");
-        public Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default) => Unsupported("storage");
+        public async Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default)
+        {
+            var local = await EvaluateAsync("({origin:location.origin,local:Object.fromEntries(Object.entries(localStorage)),session:Object.fromEntries(Object.entries(sessionStorage))})", cancellationToken).ConfigureAwait(false);
+            var origin = local.TryGetProperty("origin", out var originProp) ? originProp.GetString() ?? "" : "";
+            var localDict = local.TryGetProperty("local", out var localProp) && localProp.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, string>>(localProp) ?? new()
+                : new Dictionary<string, string>();
+            var sessionDict = local.TryGetProperty("session", out var sessionProp) && sessionProp.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, string>>(sessionProp) ?? new()
+                : new Dictionary<string, string>();
+            using var emptyCookies = JsonDocument.Parse("[]");
+            return new PageStorageState(origin, localDict, sessionDict, emptyCookies.RootElement.Clone());
+        }
+
+        public async Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            var originElem = await EvaluateAsync("location.origin", cancellationToken).ConfigureAwait(false);
+            var origin = originElem.GetString();
+            if (origin != state.Origin) throw new ArgumentException("Navigate to the storage state's origin before restoring it.", nameof(state));
+            await EvaluateAsync($$"""
+                (()=>{const state={{JsonSerializer.Serialize(state)}}; localStorage.clear(); sessionStorage.clear();
+                  for(const [k,v] of Object.entries(state.LocalStorage || {})) localStorage.setItem(k,v);
+                  for(const [k,v] of Object.entries(state.SessionStorage || {})) sessionStorage.setItem(k,v); return true;})()
+                """, cancellationToken).ConfigureAwait(false);
+        }
         public async Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
         {
             if (format != "png") throw new NotSupportedException("The Folio broker supports PNG screenshots.");
