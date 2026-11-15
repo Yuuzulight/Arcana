@@ -288,16 +288,24 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(HttpStatusCode.Created, created.StatusCode, pageJson);
         using var page = JsonDocument.Parse(pageJson);
         var route = $"v1/pages/{page.RootElement.GetProperty("pageId").GetString()}";
-        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test')]";
-        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        const string readStorage = "[location.origin, localStorage.getItem('arcana-test'), sessionStorage.getItem('arcana-test'), localStorage.getItem('__proto__')]";
+        const string seedStorage = "(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), localStorage.setItem('__proto__', 'data'), true)";
+        await Evaluate(seedStorage);
         var before = await Evaluate(readStorage);
         Assert.AreEqual(firstOrigin, before[0].GetString());
         Assert.AreEqual("local", before[1].GetString());
         Assert.AreEqual("session", before[2].GetString());
+        Assert.AreEqual("data", before[3].GetString());
+        using var exportedResponse = await client.GetAsync($"{route}/storage", timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, exportedResponse.StatusCode, await exportedResponse.Content.ReadAsStringAsync(timeout.Token));
+        var exported = await exportedResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
 
         using var navigated = await client.PostAsJsonAsync($"{route}/navigate", new { url = secondOrigin + "/html" }, timeout.Token);
         Assert.IsTrue(navigated.IsSuccessStatusCode, await navigated.Content.ReadAsStringAsync(timeout.Token));
         var after = await Evaluate(readStorage);
+        using var wrongOrigin = await client.PutAsJsonAsync($"{route}/storage", exported, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.BadRequest, wrongOrigin.StatusCode);
+        Assert.AreEqual(after.GetRawText(), (await Evaluate(readStorage)).GetRawText());
         Assert.AreEqual(secondOrigin, after[0].GetString());
         Assert.AreEqual(JsonValueKind.Null, after[1].ValueKind);
         Assert.AreEqual(JsonValueKind.Null, after[2].ValueKind);
@@ -307,7 +315,7 @@ public sealed class FolioApiBackendTests
         var returned = await Evaluate(readStorage);
 
         // Reseed after capturing the back-navigation result so reload is checked independently.
-        await Evaluate("(localStorage.setItem('arcana-test', 'local'), sessionStorage.setItem('arcana-test', 'session'), true)");
+        await Evaluate(seedStorage);
         using var reload = await client.PostAsJsonAsync($"{route}/reload", new { }, timeout.Token);
         Assert.IsTrue(reload.IsSuccessStatusCode, await reload.Content.ReadAsStringAsync(timeout.Token));
         var reloaded = await Evaluate(readStorage);
@@ -316,6 +324,17 @@ public sealed class FolioApiBackendTests
         Assert.AreEqual(firstOrigin, returned[0].GetString());
         Assert.AreEqual("local", returned[1].GetString(), $"Expected localStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
         Assert.AreEqual("session", returned[2].GetString(), $"Expected sessionStorage to survive back and reload. Back: {returned}; reload: {reloaded}");
+
+        using var closed = await client.DeleteAsync(route, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.NoContent, closed.StatusCode);
+        using var replacement = await client.PostAsJsonAsync("v1/pages", new { url = firstOrigin + "/" }, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.Created, replacement.StatusCode, await replacement.Content.ReadAsStringAsync(timeout.Token));
+        var replacementPage = await replacement.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: timeout.Token);
+        route = $"v1/pages/{replacementPage.GetProperty("pageId").GetString()}";
+        Assert.AreEqual(JsonValueKind.Null, (await Evaluate(readStorage))[1].ValueKind);
+        using var restored = await client.PutAsJsonAsync($"{route}/storage", exported, timeout.Token);
+        Assert.AreEqual(HttpStatusCode.OK, restored.StatusCode, await restored.Content.ReadAsStringAsync(timeout.Token));
+        Assert.AreEqual(before.GetRawText(), (await Evaluate(readStorage)).GetRawText());
 
         async Task<JsonElement> Evaluate(string expression)
         {

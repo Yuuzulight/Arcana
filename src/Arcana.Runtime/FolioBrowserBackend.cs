@@ -261,7 +261,19 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public Task<JsonElement> SetCookiesAsync(object[] cookies, CancellationToken cancellationToken = default) => Unsupported<JsonElement>("cookies");
         public async Task<PageStorageState> ExportStorageAsync(CancellationToken cancellationToken = default)
         {
-            var local = await EvaluateAsync("({origin:location.origin,local:Object.fromEntries(Object.entries(localStorage)),session:Object.fromEntries(Object.entries(sessionStorage))})", cancellationToken).ConfigureAwait(false);
+            var local = await EvaluateAsync("""
+                (() => {
+                    const entries = storage => {
+                        const pairs = [];
+                        for (let i = 0; i < storage.length; i++) {
+                            const key = storage.key(i);
+                            if (key !== null) pairs.push([key, storage.getItem(key)]);
+                        }
+                        return Object.fromEntries(pairs);
+                    };
+                    return { origin: location.origin, local: entries(localStorage), session: entries(sessionStorage) };
+                })()
+                """, cancellationToken).ConfigureAwait(false);
             var origin = local.TryGetProperty("origin", out var originProp) ? originProp.GetString() ?? "" : "";
             var localDict = local.TryGetProperty("local", out var localProp) && localProp.ValueKind == JsonValueKind.Object
                 ? JsonSerializer.Deserialize<Dictionary<string, string>>(localProp) ?? new()
@@ -276,14 +288,21 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         public async Task RestoreStorageAsync(PageStorageState state, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(state);
-            var originElem = await EvaluateAsync("location.origin", cancellationToken).ConfigureAwait(false);
-            var origin = originElem.GetString();
-            if (origin != state.Origin) throw new ArgumentException("Navigate to the storage state's origin before restoring it.", nameof(state));
-            await EvaluateAsync($$"""
-                (()=>{const state={{JsonSerializer.Serialize(state)}}; localStorage.clear(); sessionStorage.clear();
+            if (state.Cookies.ValueKind == JsonValueKind.Array && state.Cookies.GetArrayLength() > 0)
+                throw new NotSupportedException("Folio storage restore does not support cookies.");
+
+            var payload = JsonSerializer.Serialize(new { state.Origin, state.LocalStorage, state.SessionStorage });
+            var restored = await EvaluateAsync($$"""
+                (()=>{const state=JSON.parse({{JsonSerializer.Serialize(payload)}});
+                  if (location.origin !== state.Origin) return false;
+                  localStorage.clear(); sessionStorage.clear();
                   for(const [k,v] of Object.entries(state.LocalStorage || {})) localStorage.setItem(k,v);
                   for(const [k,v] of Object.entries(state.SessionStorage || {})) sessionStorage.setItem(k,v); return true;})()
                 """, cancellationToken).ConfigureAwait(false);
+            if (restored.ValueKind == JsonValueKind.False)
+                throw new ArgumentException("Navigate to the storage state's origin before restoring it.", nameof(state));
+            if (restored.ValueKind != JsonValueKind.True)
+                throw new InvalidOperationException("Folio did not confirm storage restoration.");
         }
         public async Task<byte[]> CaptureScreenshotAsync(string format, int? quality = null, CancellationToken cancellationToken = default)
         {
