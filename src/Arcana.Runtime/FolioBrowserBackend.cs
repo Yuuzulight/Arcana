@@ -414,7 +414,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                         }
                     } else {
                         const fileList = [fileObj];
-                        fileList.item = i => fileList[i] || null;
+                        fileList.item = function(i) { return fileList[i] || null; };
                         Object.defineProperty(element, 'files', { value: fileList, configurable: true, writable: true });
                     }
                     element.dispatchEvent(new Event('input', { bubbles: true }));
