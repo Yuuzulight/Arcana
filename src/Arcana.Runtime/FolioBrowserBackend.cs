@@ -265,7 +265,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
         {
             var local = await EvaluateAsync("""
                 (() => {
-                    const entries = storage => {
+                    const entries = function(storage) {
                         const pairs = [];
                         for (let i = 0; i < storage.length; i++) {
                             const key = storage.key(i);
@@ -480,7 +480,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 await RunReferenceActionAsync(reference, $$"""
                     if (element.tagName !== 'SELECT') throw new Error('Element is not a select.');
                     const value = {{JsonSerializer.Serialize(value)}};
-                    const option = Array.from(element.options).find(o => o.value === value || o.textContent.trim() === value);
+                    const option = Array.from(element.options).find(function(o) { return o.value === value || o.textContent.trim() === value; });
                     if (!option || option.disabled || option.parentElement?.disabled) throw new Error('Option unavailable.');
                     element.value = option.value;
                     element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -501,7 +501,7 @@ public sealed class FolioBrowserBackend : IArcanaBrowserBackend
                 (() => {
                     const reference = {{JsonSerializer.Serialize(brokerReference)}};
                     const element = Array.from(document.querySelectorAll('[data-folio-ref]'))
-                        .find(candidate => candidate.getAttribute('data-folio-ref') === reference);
+                        .find(function(candidate) { return candidate.getAttribute('data-folio-ref') === reference; });
                     if (!element) throw new Error('Stale element reference; capture a new snapshot.');
                     if (element.disabled || element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true')
                         throw new Error('Element is disabled.');
