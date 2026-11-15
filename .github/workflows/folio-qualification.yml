@@ -55,6 +55,24 @@ jobs:
         shell: pwsh
         run: |
           ./tools/test-folio-qualification.ps1 -Broker ./folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
+      - name: Package and verify the qualified Windows build
+        shell: pwsh
+        run: |
+          $zip = Join-Path $pwd 'artifacts/release/arcana-win-x64.zip'
+          ./tools/package-win-x64.ps1 -FolioPublish ./folio-source/artifacts/arcana-qualification -FolioCommit $env:FOLIO_COMMIT -OutputZip $zip
+          $unpacked = Join-Path $env:RUNNER_TEMP 'arcana-qualified-package'
+          Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
+          $snapshot = & "$unpacked/Arcana.Cli.exe" snapshot https://httpbingo.org/html --folio-allow-origin=https://httpbingo.org
+          if ($LASTEXITCODE) { throw 'The packaged Arcana executable failed its HTTPS smoke check.' }
+          $page = $snapshot | ConvertFrom-Json
+          if ($page.Url -ne 'https://httpbingo.org/html' -or $page.Text -notmatch 'Moby-Dick') {
+            throw 'The packaged Folio browser did not render the HTTPS smoke page.'
+          }
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: qualified-windows-package
+          if-no-files-found: error
+          path: artifacts/release/*
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

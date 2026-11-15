@@ -10,6 +10,24 @@ The engine is a pinned, patched source build of upstream Obscura (`engine.lock.j
 
 ## Install, build, and test
 
+### Windows release package
+
+The combined Folio qualification workflow builds a self-contained Windows x64
+ZIP from the Arcana revision under test and the full Folio host publish. Download
+`qualified-windows-package`, verify the ZIP against its `.sha256` file, extract
+the archive, and run `Arcana.Cli.exe doctor`. The archive includes the .NET
+runtime. `arcana-build.json` records the Arcana and Folio revisions and broker
+hash. The qualification workflow also opens an HTTPS fixture using the
+extracted package.
+
+To package locally from a clean checkout and a clean Folio native publish:
+
+```powershell
+./tools/package-win-x64.ps1 -FolioPublish $folioPublish -FolioCommit $folioCommit -OutputZip ./artifacts/arcana-win-x64.zip
+```
+
+### Source build
+
 Windows x64 and .NET 10 SDK:
 
 ```powershell
