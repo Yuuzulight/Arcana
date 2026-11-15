@@ -36,7 +36,7 @@ jobs:
         with:
           repository: Yuuzulight/Folio
           ref: ${{ inputs.folio_commit }}
-          path: folio-source
+          path: artifacts/folio-source
           persist-credentials: false
       - uses: actions/setup-dotnet@v6.0.0
         with:
@@ -44,8 +44,8 @@ jobs:
       - name: Publish standalone Folio broker
         shell: pwsh
         run: |
-          $destination = Join-Path $pwd 'folio-source/artifacts/arcana-qualification'
-          pwsh -NoProfile -File ./folio-source/tools/publish-content-host.ps1 -Destination $destination -Runtime win-x64
+          $destination = Join-Path $pwd 'artifacts/folio-source/artifacts/arcana-qualification'
+          pwsh -NoProfile -File ./artifacts/folio-source/tools/publish-content-host.ps1 -Destination $destination -Runtime win-x64
           if ($LASTEXITCODE) { throw 'Folio broker publish failed.' }
           $manifest = Get-Content (Join-Path $destination 'native-build.json') -Raw | ConvertFrom-Json
           if ($manifest.sourceCommit -cne $env:FOLIO_COMMIT -or $manifest.sourceDirty -ne $false) {
@@ -54,12 +54,12 @@ jobs:
       - name: Run combined Arcana qualification
         shell: pwsh
         run: |
-          ./tools/test-folio-qualification.ps1 -Broker ./folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
+          ./tools/test-folio-qualification.ps1 -Broker ./artifacts/folio-source/artifacts/arcana-qualification/Folio.ContentHost.exe
       - name: Package and verify the qualified Windows build
         shell: pwsh
         run: |
           $zip = Join-Path $pwd 'artifacts/release/arcana-win-x64.zip'
-          ./tools/package-win-x64.ps1 -FolioPublish ./folio-source/artifacts/arcana-qualification -FolioCommit $env:FOLIO_COMMIT -OutputZip $zip
+          ./tools/package-win-x64.ps1 -FolioPublish ./artifacts/folio-source/artifacts/arcana-qualification -FolioCommit $env:FOLIO_COMMIT -OutputZip $zip
           $expectedHash = ((Get-Content -LiteralPath "$zip.sha256") -split ' ')[0]
           if ((Get-FileHash -LiteralPath $zip).Hash -ne $expectedHash) { throw 'The package checksum did not match.' }
           $unpacked = Join-Path $env:RUNNER_TEMP 'arcana-qualified-package'
@@ -92,4 +92,4 @@ jobs:
           path: |
             artifacts/folio-qualification/*.trx
             artifacts/folio-qualification/*.json
-            folio-source/artifacts/arcana-qualification/native-build.json
+            artifacts/folio-source/artifacts/arcana-qualification/native-build.json

@@ -41,7 +41,7 @@ foreach ($pin in $fontPins) {
 
 $arcanaCommit = git -C $repo rev-parse HEAD
 if ($LASTEXITCODE) { throw 'Could not identify the Arcana source revision.' }
-$changed = git -C $repo status --porcelain --untracked-files=no
+$changed = git -C $repo status --porcelain --untracked-files=normal
 if ($LASTEXITCODE -or $changed) { throw 'Package Arcana from a clean source checkout.' }
 
 $stage = [IO.Directory]::CreateTempSubdirectory('arcana-package-').FullName
