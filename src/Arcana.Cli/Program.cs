@@ -74,6 +74,8 @@ static async Task SnapshotAsync(string url, string[] args, CancellationToken can
         ExecutablePath = GetOption(args, "executable"),
         FolioExecutablePath = GetOption(args, "folio-executable") ?? GetOption(args, "executable"),
         FolioBrokerPath = GetOption(args, "folio-broker"),
+        FolioAllowedOrigins = args.Where(arg => arg.StartsWith("--folio-allow-origin=", StringComparison.OrdinalIgnoreCase))
+            .Select(arg => arg["--folio-allow-origin=".Length..]).ToArray(),
         AllowPrivateNetwork = args.Contains("--allow-private-network", StringComparer.OrdinalIgnoreCase)
     };
 
