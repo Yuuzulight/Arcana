@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $IsWindows) { throw 'Build the Windows x64 package on Windows.' }
+if (-not $IsWindows -and $env:OS -ne 'Windows_NT') { throw 'Build the Windows x64 package on Windows.' }
 $repo = Split-Path -Parent $PSScriptRoot
 $output = [IO.Path]::GetFullPath($OutputZip)
 $checksum = "$output.sha256"
